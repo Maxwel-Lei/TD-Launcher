@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TD 工程启动器 · Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Tiny5&family=Silkscreen&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ===== 设计令牌：黑白灰三级 =====
+   bg0 最底层（主区背景） < bg1 面板（侧栏、抽屉、弹窗） < bg2 卡片和输入框（纯白）
+   强调只用纯黑；形状只切右上角 */
+:root{
+  --bg0:#E9E9E5; --bg1:#F4F4F1; --bg2:#FFFFFF;
+  --line:#D9D9D3; --line2:#C9C9C3;
+  --ink:#111111; --ink2:#45453F; --mute:#6B6B65; --faint:#8E8E88;
+  --dot-light:#D2D2CC; --dot-mid:#A6A69F;
+  --f-body:"Noto Sans SC",system-ui,sans-serif;
+  --f-num:"Tiny5","Noto Sans SC",monospace;
+  --f-label:"Silkscreen",monospace;
+  --f-mono:"JetBrains Mono","Noto Sans SC",monospace;
+  --ease:cubic-bezier(.2,.8,0,1);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg0);color:var(--ink);font:400 14px/1.6 var(--f-body);-webkit-font-smoothing:antialiased;font-synthesis:none}
+button,input,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+[hidden]{display:none!important}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.label{font:400 9px/1 var(--f-label);letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+.mono{font-family:var(--f-mono)}
+.num{font-family:var(--f-num)}
+
+/* 右上角倒角：--k 是倒角边长 */
+.cut{clip-path:polygon(0 0,calc(100% - var(--k,10px)) 0,100% var(--k,10px),100% 100%,0 100%);transition:clip-path .22s var(--ease),background-color .15s,background-size .22s var(--ease)}
+/* 悬浮指示：能点的东西平时是完整直角，鼠标移上去 / 键盘聚焦时切掉右上角 */
+button.cut,a.cut{clip-path:polygon(0 0,100% 0,100% 0,100% 100%,0 100%)}
+button.cut:hover,a.cut:hover,button.cut:focus-visible,a.cut:focus-visible{clip-path:polygon(0 0,calc(100% - var(--k,10px)) 0,100% var(--k,10px),100% 100%,0 100%)}
+button.cut-line{background-size:0 0}
+button.cut-line:hover,button.cut-line:focus-visible{background-size:var(--k,10px) var(--k,10px)}
+/* 带描边的倒角块：斜边补一条线 */
+.cut-line{box-shadow:inset 0 0 0 1px var(--lc,var(--ink));
+  background-image:linear-gradient(to bottom left,transparent calc(50% - .6px),var(--lc,var(--ink)) calc(50% - .6px),var(--lc,var(--ink)) calc(50% + .6px),transparent calc(50% + .6px));
+  background-position:top right;background-size:var(--k,10px) var(--k,10px);background-repeat:no-repeat}
+
+.btn{--k:10px;display:inline-flex;align-items:center;justify-content:center;gap:8px;height:44px;padding:0 20px;border:0;cursor:pointer;
+  background-color:var(--ink);color:#fff;font-weight:500;text-decoration:none;white-space:nowrap;transition:background-color .15s,clip-path .22s var(--ease),background-size .22s var(--ease)}
+.btn:hover{background-color:#2E2E2A}
+.btn.ghost{background-color:var(--bg2);color:var(--ink)}
+.btn.ghost:hover{background-color:var(--bg1)}
+.btn.text{background:transparent;padding:0 12px;height:36px;text-decoration:underline;text-underline-offset:4px;color:var(--ink)}
+.btn.text:hover{color:var(--ink2)}
+
+/* ===== 顶栏 ===== */
+header{position:relative;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:14px 28px;padding:14px 28px;background:var(--bg2);border-bottom:1px solid var(--ink)}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{display:block;width:38px;height:auto;color:var(--ink);flex:none}
+.brand b{display:block;font:700 17px/1 var(--f-body);letter-spacing:.02em}
+.brand .label{margin-top:6px;display:block}
+.root{display:flex;align-items:center;gap:10px;font-size:13px;padding-left:24px;border-left:1px solid var(--line)}
+.hd-right{flex:1 1 280px;display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap}
+.search{position:relative;flex:0 1 320px;min-width:200px;display:flex;align-items:center}
+.search svg{position:absolute;left:14px;pointer-events:none}
+.search input{--k:10px;width:100%;height:44px;padding:0 12px 0 40px;border:0;outline:none;background:var(--bg1)}
+.search input:focus{background:var(--bg2);box-shadow:inset 0 0 0 1px var(--ink)}
+input::placeholder,textarea::placeholder{color:var(--faint)}
+
+/* ===== 主体 ===== */
+.layout{display:flex;flex-wrap:wrap;min-height:calc(100vh - 69px)}
+aside{flex:1 1 220px;max-width:268px;padding:28px 16px 24px;background:var(--bg1);border-right:1px solid var(--line);display:flex;flex-direction:column;gap:32px}
+.sec-h{display:flex;align-items:baseline;justify-content:space-between;margin:0 10px 10px}
+.sec-h h2{margin:0;font-size:13px;font-weight:700}
+.st-row{--k:8px;display:flex;align-items:center;gap:12px;width:100%;min-height:42px;padding:0 12px;border:0;background:transparent;text-align:left;cursor:pointer;transition:background-color .15s,clip-path .22s var(--ease)}
+.st-row:hover{background:#EAEAE6}
+.st-row[aria-pressed=true]{background:var(--ink);color:#fff;font-weight:500}
+.st-row .n{margin-left:auto;font:400 14px/1 var(--f-num);opacity:.7}
+.ico{width:10px;height:10px;flex:none;display:inline-block}
+.ico.s1{background:var(--ink)}
+.ico.s2{box-shadow:inset 0 0 0 1.5px var(--ink)}
+.ico.s3{background:radial-gradient(circle,var(--ink2) .9px,transparent 1.2px) 0 0/3px 3px;box-shadow:inset 0 0 0 1px var(--faint)}
+.ico.s0{box-shadow:inset 0 0 0 1px var(--faint);background:linear-gradient(135deg,var(--ink) 0 50%,transparent 0)}
+[aria-pressed=true] .ico.s1,[aria-pressed=true] .ico.s0{background:#fff;box-shadow:none}
+[aria-pressed=true] .ico.s2{box-shadow:inset 0 0 0 1.5px #fff}
+[aria-pressed=true] .ico.s3{background:radial-gradient(circle,#fff .9px,transparent 1.2px) 0 0/3px 3px;box-shadow:inset 0 0 0 1px #fff}
+.tags{display:flex;flex-wrap:wrap;gap:6px;padding:0 6px}
+.tag{height:32px;padding:0 12px;border:0;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line);cursor:pointer;font-size:13px;transition:box-shadow .15s}
+.tag:hover{box-shadow:inset 0 0 0 1px var(--ink2)}
+.tag[aria-pressed=true]{background:var(--ink);color:#fff;box-shadow:none}
+.demo{margin-top:auto;padding:14px 10px 0;border-top:1px dashed var(--line2)}
+.demo .label{display:block;margin-bottom:8px}
+.seg{display:flex;gap:2px;background:var(--line);padding:2px}
+.seg button{flex:1;height:32px;border:0;background:var(--bg1);font-size:12px;cursor:pointer}
+.seg button[aria-pressed=true]{background:var(--ink);color:#fff}
+
+main{position:relative;flex:999 1 560px;min-width:0;padding:32px 36px 160px;isolation:isolate}
+#bgfx{position:absolute;inset:0;width:100%;height:100%;z-index:-1;pointer-events:none}
+.main-h{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:26px}
+.main-h h1{margin:8px 0 0;font:700 28px/1.15 var(--f-body)}
+.count{font-size:13px;color:var(--ink2);background:var(--bg0);padding:2px 6px}
+.count .num{font-size:17px;color:var(--ink)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:26px 22px}
+
+/* 卡片：白色一层，叠在灰底上；悬浮时上浮 + 投影，同时切掉右上角 */
+.card-wrap{transition:transform .25s var(--ease),filter .25s}
+.card-wrap:hover{transform:translateY(-3px);filter:drop-shadow(0 6px 0 rgba(17,17,17,.08))}
+.card{--k:12px;display:flex;flex-direction:column;width:100%;padding:0;border:0;background:var(--bg2);text-align:left;cursor:pointer}
+.thumb{position:relative;aspect-ratio:16/9;background:#161616;overflow:hidden}
+.thumb canvas,.thumb img{display:block;width:100%;height:100%}
+.thumb.empty{background:var(--bg1)}
+.thumb .hint{position:absolute;left:12px;bottom:10px;font-size:12px;line-height:1.5;color:var(--ink2)}
+.thumb .hint b{display:block;color:var(--ink);font-weight:500}
+.info{padding:13px 16px 15px;display:flex;flex-direction:column;gap:5px}
+.r1{display:flex;align-items:baseline;gap:10px}
+.r1 .name{flex:1;min-width:0;font-weight:500;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.r1 .date{font:400 12px/1 var(--f-mono);color:var(--faint)}
+.r2{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2);min-width:0}
+.r2 .ico{width:8px;height:8px}
+.r2 .st{color:var(--ink)}
+.r2 .sep{color:var(--line2)}
+.r2 .tg{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 空状态、无结果、扫描 */
+.empty-state{min-height:600px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center}
+.empty-state canvas{width:360px;max-width:100%;height:220px}
+.empty-state h1{margin:0;font:700 28px/1.3 var(--f-body)}
+.empty-state p{margin:0;max-width:30em;text-wrap:balance;color:var(--ink2);line-height:1.8}
+.empty-state .acts{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:8px}
+.nomatch{padding:40px 24px;display:flex;flex-direction:column;align-items:center;gap:12px;background:var(--bg2);text-align:center}
+.nomatch canvas{width:240px;height:120px}
+.scan{--k:12px;display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px;padding:16px 20px;margin-bottom:26px;background:var(--ink);color:#fff}
+.scan .label{color:#fff}
+.scan .blink{width:8px;height:8px;background:#fff;animation:blink 1s steps(1) infinite}
+.scan .found{margin-left:auto}
+.scan .found .num{font-size:18px}
+.scan .bar{flex:1 1 100%;height:4px;background:#3A3A36}
+.scan .bar i{display:block;height:4px;background:#fff;width:0;transition:width .3s}
+.skel .bar1{height:12px;width:58%;background:#ECECE8}
+.skel .bar2{height:10px;width:36%;background:#F2F2EF}
+@keyframes blink{50%{opacity:0}}
+
+/* ===== 遮罩、弹窗、抽屉 ===== */
+.scrim{position:fixed;inset:0;z-index:20;background:rgba(17,17,17,.32);opacity:0;pointer-events:none;transition:opacity .25s}
+.scrim.on{opacity:1;pointer-events:auto}
+.modal{--k:16px;position:fixed;z-index:30;left:50%;top:50%;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;
+  background:var(--bg1);transform:translate(-50%,-48%);opacity:0;pointer-events:none;transition:opacity .2s,transform .3s var(--ease)}
+.modal.on{opacity:1;transform:translate(-50%,-50%);pointer-events:auto}
+.drawer{position:fixed;z-index:30;top:0;right:0;bottom:0;width:min(460px,100vw);display:flex;flex-direction:column;background:var(--bg0);border-left:1px solid var(--ink);
+  transform:translateX(100%);transition:transform .35s var(--ease)}
+.drawer.on{transform:none}
+.pane-h{position:relative;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:24px 26px 18px;overflow:hidden}
+.pane-h canvas{position:absolute;right:0;top:0;width:260px;height:110px;pointer-events:none}
+.pane-h h2{position:relative;margin:8px 0 0;font:700 22px/1.25 var(--f-body)}
+.pane-h .label{position:relative}
+.x{position:relative;width:44px;height:44px;display:grid;place-items:center;border:0;background:var(--bg2);cursor:pointer}
+.x:hover{background:var(--ink);color:#fff}
+.pane-b{flex:1;overflow:auto;padding:4px 26px 22px;display:flex;flex-direction:column;gap:20px}
+.pane-f{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:16px 26px 20px;background:var(--bg2);border-top:1px solid var(--line)}
+.field{display:flex;flex-direction:column;gap:8px}
+.field>label,.field>.fl{font-size:13px;font-weight:500;display:flex;justify-content:space-between;align-items:baseline}
+.inp{--k:10px;--lc:var(--line2);width:100%;height:44px;padding:0 14px;border:0;outline:none;background-color:var(--bg2)}
+.inp:focus{--lc:var(--ink)}
+textarea.inp{height:auto;padding:12px 14px;line-height:1.7;resize:vertical}
+.warn{font-size:12px;color:var(--ink2)}
+.tpls{display:flex;gap:10px}
+.tpl{--k:10px;flex:1;padding:14px 16px;border:0;text-align:left;background:var(--ink);color:#fff}
+.tpl small{display:block;margin-top:4px;font-size:12px;color:#CFCFC9}
+.tpl.off{background:var(--bg2);color:var(--mute);box-shadow:inset 0 0 0 1px var(--line);cursor:not-allowed}
+.tpl.off small{color:var(--faint)}
+.tpl .label{float:right;color:#A6A69F}
+.pathbox{display:flex;align-items:center;gap:8px;padding-left:14px}
+.pathbox span{flex:1;font:400 13px var(--f-mono)}
+.chk{display:flex;align-items:center;gap:10px;min-height:32px;cursor:pointer}
+.chk input{width:18px;height:18px;margin:0;accent-color:var(--ink)}
+.chk small{color:var(--mute);font-size:12px}
+pre.tree{margin:0;padding:16px 18px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line);font:400 12.5px/1.7 var(--f-mono);color:var(--ink2);overflow-x:auto}
+pre.tree b{color:var(--ink);font-weight:500}
+
+/* 抽屉里的分组：白色块叠在灰底上 */
+.block{background:var(--bg2);padding:16px 18px;display:flex;flex-direction:column;gap:10px}
+.d-thumb{--k:14px;aspect-ratio:16/9;background:#161616}
+.d-thumb canvas,.d-thumb img{display:block;width:100%;height:100%}
+.d-name{margin:0;font:700 22px/1.3 var(--f-body)}
+.d-path{font:400 12px/1.5 var(--f-mono);color:var(--ink2);word-break:break-all}
+.d-meta{font-size:12px;color:var(--mute)}
+.acts2{display:flex;gap:10px}
+.acts2 .btn{flex:1}
+.stseg{display:flex;gap:6px}
+.stseg button{flex:1;height:42px;display:flex;align-items:center;justify-content:center;gap:8px;border:0;background:var(--bg1);cursor:pointer}
+.stseg button:hover{background:#EAEAE6}
+.stseg button[aria-pressed=true]{background:var(--ink);color:#fff;font-weight:500}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;height:32px;padding-left:12px;background:var(--bg1);font-size:13px}
+.chip button{width:30px;height:30px;border:0;background:transparent;color:var(--mute);cursor:pointer;display:grid;place-items:center}
+.chip button:hover{color:var(--ink)}
+.addrow{display:flex;gap:8px}
+.addrow .inp{flex:1;height:40px;background-color:var(--bg1);box-shadow:none;background-image:none}
+.addrow .inp:focus{box-shadow:inset 0 0 0 1px var(--ink);background-color:var(--bg2)}
+.block .inp{background-color:var(--bg1);box-shadow:none;background-image:none}
+.block .inp:focus{background-color:var(--bg2);box-shadow:inset 0 0 0 1px var(--ink)}
+.saved{justify-content:flex-start;font-size:12px;color:var(--ink2)}
+.saved .label{color:var(--ink);transition:opacity .3s}
+
+.toast{--k:10px;position:fixed;z-index:40;left:50%;bottom:28px;transform:translate(-50%,20px);padding:12px 18px;background:var(--ink);color:#fff;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s,transform .3s var(--ease)}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+
+@media (max-width:760px){
+  header{padding:12px 16px}
+  .root{display:none}
+  aside{max-width:none;flex-basis:100%;border-right:0;border-bottom:1px solid var(--line);padding:16px}
+  main{padding:24px 16px 56px}
+  .demo{margin-top:0}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <svg class="logo" viewBox="280 290 720 700" role="img" aria-label="TD学长"><path fill="currentColor" fill-rule="evenodd" transform="translate(-57 0)" d="M387.31 299.43 A13.00 13.00 0 0 1 399.81 290.00 L972.77 290.00 A13.00 13.00 0 0 1 985.27 306.57 L975.16 341.92 A37.72 37.72 0 0 0 1011.43 390.00 L1044.19 390.00 A13.00 13.00 0 0 1 1056.69 406.57 L921.27 880.57 A13.00 13.00 0 0 1 908.77 890.00 L856.29 890.00 A50.00 50.00 0 0 0 808.21 926.26 L792.69 980.57 A13.00 13.00 0 0 1 780.19 990.00 L407.23 990.00 A13.00 13.00 0 0 1 394.73 973.43 L514.65 553.74 A50.00 50.00 0 0 0 466.57 490.00 L350.09 490.00 A13.00 13.00 0 0 1 337.59 473.43 Z M670.57 490.00 A50.00 50.00 0 0 0 622.50 526.26 L565.35 726.26 A50.00 50.00 0 0 0 613.43 790.00 L809.43 790.00 A50.00 50.00 0 0 0 857.50 753.74 L914.65 553.74 A50.00 50.00 0 0 0 866.57 490.00 Z"/></svg>
+    <div><b>工程启动器</b><span class="label">TD Launcher · [Name TBD]</span></div>
+  </div>
+  <div class="root">
+    <span class="label">Root</span>
+    <span class="mono">~/TD Projects</span>
+    <button class="btn text" type="button" data-toast="演示：这里会弹出系统的选择文件夹窗口">更改</button>
+  </div>
+  <div class="hd-right">
+    <label class="search">
+      <span class="sr">搜索工程</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6B6B65" stroke-width="2" stroke-linecap="square" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+      <input class="cut" id="q" type="search" placeholder="搜索工程名称">
+    </label>
+    <button class="btn cut" type="button" id="openNew">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M12 4v16M4 12h16"/></svg>
+      新建工程
+    </button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside>
+    <section>
+      <div class="sec-h"><h2>状态</h2><span class="label">Status</span></div>
+      <div id="stList"></div>
+    </section>
+    <section>
+      <div class="sec-h"><h2>标签</h2><span class="label">Tags</span></div>
+      <div class="tags" id="tagList"></div>
+      <button class="btn text" type="button" id="clear" hidden style="margin:10px 0 0 2px">清除筛选</button>
+    </section>
+    <div class="demo">
+      <span class="label">Demo · 切换界面状态</span>
+      <div class="seg" id="demoSeg">
+        <button type="button" data-v="wall" aria-pressed="true">卡片墙</button>
+        <button type="button" data-v="empty" aria-pressed="false">空状态</button>
+        <button type="button" data-v="scan" aria-pressed="false">扫描中</button>
+      </div>    </div>
+  </aside>
+
+  <main id="main">
+    <canvas id="bgfx" aria-hidden="true"></canvas>
+    <div id="view"></div>
+  </main>
+</div>
+
+<!-- 新建工程 -->
+<div class="scrim" id="scrim"></div>
+<div class="modal cut" id="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <div class="pane-h">
+    <canvas id="mfx" aria-hidden="true"></canvas>
+    <div><span class="label">New Project</span><h2 id="mTitle">新建工程</h2></div>
+    <button class="x" type="button" data-close aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg></button>
+  </div>
+  <div class="pane-b">
+    <div class="field">
+      <label for="npName">工程名称</label>
+      <input class="inp cut cut-line" id="npName" type="text" placeholder="例如：粒子雨" value="粒子雨">
+      <div class="warn" id="npWarn" hidden>已自动去掉系统不允许的字符（: ? * / \ 等）</div>
+    </div>
+    <div class="field">
+      <div class="fl">模板</div>
+      <div class="tpls">
+        <div class="tpl cut"><span class="label">Default</span>默认模板<small>素材 / 组件 / 脚本 / 输出</small></div>
+        <div class="tpl off">演出 · 装置 · 接单<small>多套模板，以后再做</small></div>
+      </div>
+    </div>
+    <div class="field">
+      <div class="fl">保存位置</div>
+      <div class="inp cut cut-line pathbox"><span>~/TD Projects</span><button class="btn text" type="button" data-toast="演示：这里会弹出系统的选择文件夹窗口">更改</button></div>
+    </div>
+    <label class="chk"><input type="checkbox" id="npDate" checked><span>文件夹名前面加日期</span><small>企划 §10 待定</small></label>
+    <div class="field">
+      <div class="fl"><span>将会创建</span><span class="label">Preview</span></div>
+      <pre class="tree" id="npTree"></pre>
+    </div>
+  </div>
+  <div class="pane-f">
+    <button class="btn text" type="button" data-close>取消</button>
+    <button class="btn cut" type="button" id="npCreate">创建并用 TD 打开</button>
+  </div>
+</div>
+
+<!-- 工程详情 -->
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dName">
+  <div class="pane-h" style="background:var(--bg2);border-bottom:1px solid var(--line);padding-bottom:16px">
+    <canvas id="dfx" aria-hidden="true"></canvas>
+    <div><span class="label">Project</span><h2 style="font-size:16px;margin-top:6px">工程详情</h2></div>
+    <button class="x" type="button" data-close aria-label="关闭" style="background:var(--bg1)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg></button>
+  </div>
+  <div class="pane-b" style="padding-top:20px;gap:12px">
+    <div class="d-thumb cut" id="dThumb"></div>
+    <div class="block">
+      <h3 class="d-name" id="dName"></h3>
+      <div class="d-path" id="dPath"></div>
+      <div class="d-meta" id="dMeta"></div>
+      <div class="acts2" style="margin-top:6px">
+        <button class="btn cut" type="button" data-toast="演示：会用系统默认程序打开 .toe">用 TD 打开</button>
+        <button class="btn ghost cut cut-line" type="button" data-toast="演示：会在 Finder / 资源管理器中显示">在文件夹中显示</button>
+      </div>
+    </div>
+    <div class="block">
+      <div class="sec-h" style="margin:0"><h2>状态</h2><span class="label">Status</span></div>
+      <div class="stseg" id="dStatus"></div>
+    </div>
+    <div class="block">
+      <div class="sec-h" style="margin:0"><h2>标签</h2><span class="label">Tags</span></div>
+      <div class="chips" id="dTags"></div>
+      <div class="addrow">
+        <label class="sr" for="dTagIn">新标签</label>
+        <input class="inp" id="dTagIn" type="text" placeholder="输入新标签，回车添加">
+        <button class="btn ghost cut-line" type="button" id="dTagAdd" style="height:40px;--k:0px">添加</button>
+      </div>
+    </div>
+    <div class="block">
+      <div class="field"><label for="dClient">客户 / 来源</label><input class="inp" id="dClient" type="text" placeholder="可留空"></div>
+      <div class="field"><label for="dNote">备注</label><textarea class="inp" id="dNote" rows="4" placeholder="随手记点什么"></textarea></div>
+    </div>
+  </div>
+  <div class="pane-f saved"><span class="label" id="savedTag">Saved</span>改动自动保存到工程文件夹里的 project.json</div>
+</div>
+
+<div class="toast cut" id="toast" role="status"></div>
+
+<script>
+/* ================= 数据（演示用） ================= */
+const STATUSES = ['进行中', '已交付', '搁置'];
+const ICON = { '全部': 's0', '进行中': 's1', '已交付': 's2', '搁置': 's3' };
+let projects = [
+  { id: 1, name: '粒子雨', tags: ['粒子', 'GPU'], status: '进行中', created: '2026-11-12', kind: 0, note: '粒子数 200 万时掉帧，下次试 Instancing。', client: '' },
+  { id: 2, name: '手势控制粒子', tags: ['粒子', '传感器', '装置'], status: '进行中', created: '2026-11-08', kind: 1, note: '', client: '' },
+  { id: 3, name: '音频可视化 · 演出版', tags: ['音频可视化', '演出'], status: '已交付', created: '2026-10-28', kind: 2, note: '', client: 'Livehouse' },
+  { id: 4, name: '发布会主视觉', tags: ['接单', '演出'], status: '已交付', created: '2026-10-15', kind: 4, note: '', client: '某品牌' },
+  { id: 5, name: 'Kinect 互动墙', tags: ['传感器', '装置'], status: '进行中', created: '2026-10-02', kind: 3, note: '', client: '' },
+  { id: 6, name: '点云扫描测试', tags: ['点云', '测试'], status: '搁置', created: '2026-09-20', kind: 1, note: '', client: '' },
+  { id: 7, name: 'GLSL 噪声练习', tags: ['GLSL', '测试'], status: '搁置', created: '2026-09-03', kind: 3, note: '', client: '' },
+  { id: 8, name: '2025 毕设装置', tags: ['装置'], status: '已交付', created: '2025-06-11', kind: -1, note: '', client: '' }
+];
+const ui = { status: '全部', tag: '', q: '', screen: 'wall', openId: null };
+
+/* ================= 融球点阵 =================
+   大小一致的圆点排在方格上；相邻两点之间用"凹圆角桥"连起来（和两圆都相切的圆弧，即 fillet）。
+   每座桥的腰宽随时间变化：变细 → 断开 → 再长出来，所以点阵会不停地连接、分离。
+   全部是精确几何，边缘锐利，不用模糊滤镜。
+   可调参数（每层）：
+     S        点与点的间距（px）
+     ratio    圆点半径 / 间距，越大点越胖、越容易连
+     keep     簇内保留点的比例（留空洞更自然）
+     linkP    相邻点之间"有可能"连接的比例
+     waist    桥最宽时的腰宽 / 半径（0.62 ≈ 参考图那种饱满的颈） */
+const WAIST = 0.42;
+const fx = new Map(); // canvas -> { layers }
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function registerFx(canvas, cfg) { fx.set(canvas, cfg); sizeCanvas(canvas); drawFx(canvas, cfg, T); }
+function sizeCanvas(c) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = c.clientWidth, h = c.clientHeight;
+  if (!w || !h) return false;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  c._w = w; c._h = h; c._dpr = dpr; return true;
+}
+function buildLayer(L, w, h) {
+  const S = L.S, R = S * (L.ratio || 0.28), rnd = seeded(L.seed || 1);
+  const cols = Math.ceil(w / S) + 1, rows = Math.ceil(h / S) + 1;
+  const ox = (w - (cols - 1) * S) / 2, oy = (h - (rows - 1) * S) / 2;
+  const at = {}, nodes = [], links = [];
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    const x = ox + i * S, y = oy + j * S;
+    const inside = L.clusters.some(c => ((x - c.x * w) / c.rx) ** 2 + ((y - c.y * h) / c.ry) ** 2 <= 1);
+    if (inside && rnd() < (L.keep ?? 0.85)) { const n = { x, y }; nodes.push(n); at[i + ',' + j] = n; }
+  }
+  for (const key in at) {
+    const [i, j] = key.split(',').map(Number), a = at[key];
+    for (const b of [at[(i + 1) + ',' + j], at[i + ',' + (j + 1)]]) {
+      if (b && rnd() < (L.linkP ?? 0.6)) links.push({ a, b, sp: 0.35 + rnd() * 0.5, ph: rnd() * 6.283, bias: rnd() * 0.8 - 0.3 });
+    }
+  }
+  return { R, nodes, links };
+}
+const TAU = Math.PI * 2;
+// 沿圆心 c、半径 r 的圆，从 p1 画到 p2，走经过 m 的那一侧
+function arcThrough(ctx, c, r, p1, p2, m) {
+  const a1 = Math.atan2(p1[1] - c[1], p1[0] - c[0]), a2 = Math.atan2(p2[1] - c[1], p2[0] - c[0]), am = Math.atan2(m[1] - c[1], m[0] - c[0]);
+  const sweep = ((a2 - a1) % TAU + TAU) % TAU, sm = ((am - a1) % TAU + TAU) % TAU;
+  ctx.arc(c[0], c[1], r, a1, a2, !(sm < sweep));
+}
+// 两个半径都为 R 的圆之间的凹圆角桥，腰宽的一半为 wst
+function bridge(ctx, A, B, R, wst) {
+  const dx = B.x - A.x, dy = B.y - A.y, d = Math.hypot(dx, dy), ux = dx / d, uy = dy / d, nx = -uy, ny = ux, half = d / 2;
+  const f = (wst * wst + half * half - R * R) / (2 * (R - wst)); // 圆角半径
+  if (!(f > 0.01)) return;
+  const mx = A.x + ux * half, my = A.y + uy * half, k = R / (R + f);
+  const Ct = [mx + nx * (wst + f), my + ny * (wst + f)], Cb = [mx - nx * (wst + f), my - ny * (wst + f)];
+  const tp = (P, C) => [P.x + (C[0] - P.x) * k, P.y + (C[1] - P.y) * k];
+  const TAt = tp(A, Ct), TBt = tp(B, Ct), TAb = tp(A, Cb), TBb = tp(B, Cb);
+  ctx.moveTo(TAt[0], TAt[1]);
+  arcThrough(ctx, Ct, f, TAt, TBt, [mx + nx * wst, my + ny * wst]);
+  ctx.lineTo(TBb[0], TBb[1]);
+  arcThrough(ctx, Cb, f, TBb, TAb, [mx - nx * wst, my - ny * wst]);
+  ctx.closePath();
+}
+function drawFx(c, cfg, t) {
+  if (!sizeCanvas(c)) return;
+  const ctx = c.getContext('2d'), w = c._w, h = c._h;
+  ctx.setTransform(c._dpr, 0, 0, c._dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  for (const L of cfg.layers) {
+    const key = w + 'x' + h;
+    if (L._key !== key) { L._g = buildLayer(L, w, h); L._key = key; }
+    const { R, nodes, links } = L._g;
+    ctx.fillStyle = L.color;
+    ctx.beginPath();
+    for (const n of nodes) { ctx.moveTo(n.x + R, n.y); ctx.arc(n.x, n.y, R, 0, TAU); }
+    ctx.fill();
+    ctx.beginPath();
+    for (const l of links) {
+      let s = Math.sin(t * l.sp + l.ph) * 1.6 + l.bias;
+      if (s <= 0) continue;
+      s = Math.min(1, s); s = s * s * (3 - 2 * s);
+      const wst = s * R * WAIST;
+      if (wst > 0.3) bridge(ctx, l.a, l.b, R, wst);
+    }
+    ctx.fill();
+  }
+}
+let T = 0, last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!reduceMotion && !document.hidden) T += dt * 0.9;
+  for (const [c, cfg] of fx) {
+    if (!c.isConnected) { fx.delete(c); continue; }
+    if (c.offsetParent === null && c.id !== 'bgfx') continue;
+    drawFx(c, cfg, T);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* 两个球同一个中心，一个几乎不动、一个来回跑：它们会周期性地分开、拉出"脖子"、再融回去 */
+const pair = (x, y, R, r, ax, ay, sp, ph = 0) => [
+  { x, y, r: R, ax: ax * 0.08, ay: ay * 0.08, sp: sp * 0.7, ph },
+  { x, y, r, ax, ay, sp, ph: ph + 1.3 }
+];
+function seeded(id) { let s = id * 9301 + 49297; return () => (s = (s * 9301 + 49297) % 233280) / 233280; }
+
+/* ================= 演示缩略图（灰阶，代表 TD 存下的 thumb.jpg） ================= */
+function makeThumb(p) {
+  const c = document.createElement('canvas'); c.width = 640; c.height = 360;
+  const g = c.getContext('2d'), rnd = seeded(p.id);
+  g.fillStyle = '#141414'; g.fillRect(0, 0, 640, 360);
+  if (p.kind === 0) { for (let i = 0; i < 1400; i++) { const x = rnd() * 640, y = rnd() * 360, a = rnd(); g.fillStyle = `rgba(255,255,255,${a * a * 0.9})`; g.fillRect(x, y, 1 + a * 2, 4 + a * 18); } }
+  if (p.kind === 1) { for (let i = 0; i < 2600; i++) { const a = rnd() * 6.283, r = Math.pow(rnd(), 0.6) * 150; g.fillStyle = `rgba(230,230,225,${0.15 + rnd() * 0.6})`; g.fillRect(320 + Math.cos(a) * r * 1.4, 180 + Math.sin(a) * r, 2, 2); } }
+  if (p.kind === 2) { g.strokeStyle = 'rgba(240,240,236,.85)'; for (let k = 0; k < 18; k++) { g.lineWidth = k % 4 ? 0.8 : 1.6; g.beginPath(); for (let x = 0; x <= 640; x += 4) { const y = 180 + Math.sin(x * 0.02 + k * 0.4) * (20 + k * 5) * Math.sin(x * 0.006 + k); x ? g.lineTo(x, y) : g.moveTo(x, y); } g.stroke(); } }
+  if (p.kind === 3) { const s = 16; for (let y = 0; y < 360; y += s) for (let x = 0; x < 640; x += s) { const v = Math.floor(30 + 200 * Math.pow((Math.sin(x * 0.013 + rnd()) * Math.cos(y * 0.019) + 1) / 2, 2.2)); g.fillStyle = `rgb(${v},${v},${v - 4})`; g.fillRect(x + 1, y + 1, s - 2, s - 2); } }
+  if (p.kind === 4) { g.translate(320, 180); for (let i = 0; i < 160; i++) { g.rotate(0.0393); g.fillStyle = `rgba(245,245,240,${0.2 + (i % 5) * 0.15})`; g.fillRect(40, -1, 120 + rnd() * 160, 2); } }
+  return c.toDataURL('image/jpeg', 0.85);
+}
+const thumbCache = {};
+const thumbOf = p => p.kind < 0 ? null : (thumbCache[p.id] ||= makeThumb(p));
+
+/* ================= 渲染 ================= */
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function renderSide() {
+  $('#stList').innerHTML = ['全部', ...STATUSES].map(s => {
+    const n = s === '全部' ? projects.length : projects.filter(p => p.status === s).length;
+    return `<button class="st-row cut" type="button" data-st="${s}" aria-pressed="${ui.status === s}"><i class="ico ${ICON[s]}"></i>${s}<span class="n">${n}</span></button>`;
+  }).join('');
+  const tags = [...new Set(projects.flatMap(p => p.tags))];
+  $('#tagList').innerHTML = tags.map(t => `<button class="tag" type="button" data-tag="${esc(t)}" aria-pressed="${ui.tag === t}">${esc(t)}</button>`).join('');
+  $('#clear').hidden = !(ui.status !== '全部' || ui.tag || ui.q);
+}
+
+function cardHTML(p) {
+  const th = thumbOf(p);
+  return `<div class="card-wrap"><button class="card cut" type="button" data-open="${p.id}">
+    <div class="thumb${th ? '' : ' empty'}">${th ? `<img src="${th}" alt="">` : `<canvas data-ph="${p.id}" aria-hidden="true"></canvas><div class="hint"><b>还没有缩略图</b>用 TD 打开并保存一次即可生成</div>`}</div>
+    <div class="info">
+      <div class="r1"><span class="name">${esc(p.name)}</span><span class="date">${p.created}</span></div>
+      <div class="r2"><i class="ico ${ICON[p.status]}"></i><span class="st">${p.status}</span><span class="sep">/</span><span class="tg">${p.tags.map(esc).join(' · ') || '无标签'}</span></div>
+    </div></button></div>`;
+}
+
+let scanTimer = null;
+function renderView() {
+  const v = $('#view');
+  clearInterval(scanTimer);
+  if (ui.screen === 'empty') {
+    v.innerHTML = `<div class="empty-state">
+      <canvas id="emptyfx" aria-hidden="true"></canvas>
+      <span class="label">No projects yet</span>
+      <h1>这里还没有工程</h1>
+      <p>新建一个工程，或者把工程根目录指向你已有 TD 工程所在的文件夹。</p>
+      <div class="acts"><button class="btn cut" type="button" data-new>新建第一个工程</button><button class="btn ghost cut cut-line" type="button" data-toast="演示：这里会弹出系统的选择文件夹窗口">选择工程根目录</button></div>
+    </div>`;
+    registerFx($('#emptyfx'), { layers: [
+      { S: 34, color: '#C4C4BE', seed: 5, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.4, y: 0.56, rx: 125, ry: 80 }] },
+      { S: 34, color: '#111111', seed: 9, keep: 1, linkP: 0.9, clusters: [{ x: 0.78, y: 0.28, rx: 50, ry: 42 }] }
+    ] });
+    return;
+  }
+  if (ui.screen === 'scan') {
+    v.innerHTML = `<div class="scan cut"><span class="blink"></span><span class="label">Scanning</span><span>正在扫描 <span class="mono">~/TD Projects</span></span>
+      <span class="found">已找到 <span class="num" id="scanN">0</span> 个工程</span><div class="bar"><i id="scanBar"></i></div></div>
+      <div class="grid">${[0, 1, 2, 3, 4, 5].map(i => `<div class="card cut skel"><div class="thumb empty"><canvas data-sk="${i}" aria-hidden="true"></canvas></div><div class="info" style="gap:10px;padding-bottom:18px"><div class="bar1"></div><div class="bar2"></div></div></div>`).join('')}</div>`;
+    v.querySelectorAll('canvas[data-sk]').forEach(c => { const i = +c.dataset.sk; registerFx(c, { layers: [{ S: 26, color: '#C9C9C3', seed: 10 + i, keep: 0.8, linkP: 0.7, clusters: [{ x: 0.5, y: 0.5, rx: 120, ry: 60 }] }] }); });
+    let n = 0; scanTimer = setInterval(() => { n = (n + 1) % 49; const a = $('#scanN'), b = $('#scanBar'); if (a) a.textContent = n; if (b) b.style.width = (n / 48 * 100) + '%'; }, 120);
+    return;
+  }
+  const q = ui.q.trim().toLowerCase();
+  const list = projects.filter(p => (ui.status === '全部' || p.status === ui.status) && (!ui.tag || p.tags.includes(ui.tag)) && (!q || p.name.toLowerCase().includes(q)));
+  let head = ui.status === '全部' ? '全部工程' : ui.status; if (ui.tag) head += ' · ' + ui.tag;
+  v.innerHTML = `<div class="main-h"><div><span class="label">Projects</span><h1>${esc(head)}</h1></div>
+    <div class="count">共 <span class="num">${list.length}</span> 个工程 · 最近修改在前</div></div>
+    ${list.length ? `<div class="grid">${list.map(cardHTML).join('')}</div>` :
+      `<div class="nomatch"><canvas id="nmfx" aria-hidden="true"></canvas><div style="font-weight:500">没有符合条件的工程</div><button class="btn ghost cut cut-line" type="button" data-clear>清除筛选</button></div>`}`;
+  v.querySelectorAll('canvas[data-ph]').forEach(c => {
+    registerFx(c, { layers: [{ S: 26, color: '#BDBDB6', seed: +c.dataset.ph, keep: 0.8, linkP: 0.65, clusters: [{ x: 0.66, y: 0.4, rx: 95, ry: 55 }] }] });
+  });
+  if ($('#nmfx')) registerFx($('#nmfx'), { layers: [{ S: 24, color: '#C4C4BE', seed: 2, keep: 0.85, linkP: 0.7, clusters: [{ x: 0.5, y: 0.5, rx: 80, ry: 40 }] }] });
+}
+
+function render() { renderSide(); renderView(); }
+
+/* ================= 新建工程 ================= */
+const today = () => { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+function updateTree() {
+  const base = $('#npName').value.trim() || '未命名';
+  const folder = ($('#npDate').checked ? today() + '_' : '') + base;
+  $('#npTree').innerHTML = [`<b>${esc(folder)}/</b>`, `├─ ${esc(base)}.toe`, '├─ project.json   ← 标签、状态、备注', '├─ thumb.jpg      ← 保存时自动生成',
+    '├─ assets/', '│  ├─ images/', '│  ├─ videos/', '│  ├─ audio/', '│  ├─ models/', '│  └─ fonts/', '├─ tox/', '├─ scripts/', '└─ export/'].join('\n');
+}
+$('#npName').addEventListener('input', e => {
+  const raw = e.target.value, clean = raw.replace(/[:?*\/\\<>|"]/g, '');
+  if (clean !== raw) { const pos = e.target.selectionStart - (raw.length - clean.length); e.target.value = clean; e.target.setSelectionRange(pos, pos); }
+  $('#npWarn').hidden = clean === raw && $('#npWarn').hidden;
+  updateTree();
+});
+$('#npDate').addEventListener('change', updateTree);
+$('#npCreate').addEventListener('click', () => {
+  const name = $('#npName').value.trim() || '未命名';
+  projects.unshift({ id: Date.now(), name, tags: [], status: '进行中', created: today(), kind: -1, note: '', client: '' });
+  ui.screen = 'wall'; syncDemoSeg(); closeAll(); render();
+  toast(`已创建「${name}」· 演示里不会真的建文件夹`);
+});
+function openNew() {
+  closeAll(); $('#npWarn').hidden = true; updateTree();
+  $('#scrim').classList.add('on'); $('#modal').classList.add('on');
+  registerFx($('#mfx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 4, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.3, rx: 110, ry: 70 }] }] });
+  setTimeout(() => $('#npName').focus(), 60);
+}
+
+/* ================= 详情抽屉 ================= */
+function openDetail(id) {
+  const p = projects.find(x => x.id === id); if (!p) return;
+  ui.openId = id; closeAll(true);
+  const th = thumbOf(p);
+  $('#dThumb').innerHTML = th ? `<img src="${th}" alt="${esc(p.name)} 的缩略图">` : '<canvas id="dph" aria-hidden="true"></canvas>';
+  $('#dThumb').style.background = th ? '#161616' : 'var(--bg1)';
+  if (!th) registerFx($('#dph'), { layers: [{ S: 30, color: '#BDBDB6', seed: 7, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.5, y: 0.5, rx: 150, ry: 80 }] }] });
+  $('#dName').textContent = p.name;
+  $('#dPath').textContent = `~/TD Projects/${p.created}_${p.name}`;
+  $('#dMeta').textContent = `创建于 ${p.created} · ${th ? '缩略图更新于 今天 02:14' : '还没有缩略图'}`;
+  $('#dClient').value = p.client; $('#dNote').value = p.note;
+  renderDetailBits(p);
+  $('#scrim').classList.add('on'); $('#drawer').classList.add('on');
+  registerFx($('#dfx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 8, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.4, rx: 100, ry: 60 }] }] });
+}
+function renderDetailBits(p) {
+  $('#dStatus').innerHTML = STATUSES.map(s => `<button type="button" data-dst="${s}" aria-pressed="${p.status === s}"><i class="ico ${ICON[s]}"></i>${s}</button>`).join('');
+  $('#dTags').innerHTML = p.tags.map(t => `<span class="chip">${esc(t)}<button type="button" data-rm="${esc(t)}" aria-label="删除标签 ${esc(t)}"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg></button></span>`).join('') || '<span style="font-size:13px;color:var(--mute)">还没有标签</span>';
+}
+const cur = () => projects.find(x => x.id === ui.openId);
+function saved() { const s = $('#savedTag'); s.style.opacity = 0; setTimeout(() => s.style.opacity = 1, 180); }
+function addTag() { const p = cur(), v = $('#dTagIn').value.trim(); $('#dTagIn').value = ''; if (!p || !v || p.tags.includes(v)) return; p.tags.push(v); renderDetailBits(p); renderSide(); renderView(); saved(); }
+$('#dTagAdd').addEventListener('click', addTag);
+$('#dTagIn').addEventListener('keydown', e => { if (e.key === 'Enter') addTag(); });
+$('#dClient').addEventListener('input', e => { const p = cur(); if (p) { p.client = e.target.value; saved(); } });
+$('#dNote').addEventListener('input', e => { const p = cur(); if (p) { p.note = e.target.value; saved(); } });
+
+/* ================= 通用 ================= */
+function closeAll(keepScrim) {
+  $('#modal').classList.remove('on'); $('#drawer').classList.remove('on');
+  if (!keepScrim) $('#scrim').classList.remove('on');
+}
+let toastT;
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2400); }
+function syncDemoSeg() { document.querySelectorAll('#demoSeg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === ui.screen)); }
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('button,[data-close]'); if (!t) { if (e.target.id === 'scrim') closeAll(); return; }
+  if (t.dataset.st) { ui.status = t.dataset.st; render(); }
+  else if (t.dataset.tag !== undefined) { ui.tag = ui.tag === t.dataset.tag ? '' : t.dataset.tag; render(); }
+  else if (t.id === 'clear' || t.dataset.clear !== undefined) { ui.status = '全部'; ui.tag = ''; ui.q = ''; $('#q').value = ''; render(); }
+  else if (t.dataset.v) { ui.screen = t.dataset.v; syncDemoSeg(); renderView(); }  else if (t.dataset.open) openDetail(+t.dataset.open);
+  else if (t.id === 'openNew' || t.dataset.new !== undefined) openNew();
+  else if (t.dataset.close !== undefined) closeAll();
+  else if (t.dataset.dst) { const p = cur(); p.status = t.dataset.dst; renderDetailBits(p); render(); saved(); }
+  else if (t.dataset.rm) { const p = cur(); p.tags = p.tags.filter(x => x !== t.dataset.rm); renderDetailBits(p); render(); saved(); }
+  if (t.dataset.toast) toast(t.dataset.toast);
+});
+$('#q').addEventListener('input', e => { ui.q = e.target.value; renderSide(); renderView(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAll(); });
+
+/* 主区背景：右下一大组、左下一组、右上一小组 */
+registerFx($('#bgfx'), { layers: [
+  { S: 40, color: '#D0D0CA', seed: 3, keep: 0.88, linkP: 0.6, clusters: [{ x: 0.9, y: 0.88, rx: 280, ry: 210 }, { x: 0.25, y: 1.02, rx: 300, ry: 130 }] },
+  { S: 40, color: '#A6A69F', seed: 6, keep: 0.9, linkP: 0.75, clusters: [{ x: 0.96, y: 0.07, rx: 130, ry: 110 }] }
+] });
+new ResizeObserver(() => drawFx($('#bgfx'), fx.get($('#bgfx')), T)).observe($('#main'));
+
+render();
+</script>
+</body>
+</html>

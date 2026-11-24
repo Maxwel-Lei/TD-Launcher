@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TD 工程启动器</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Tiny5&family=Silkscreen&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ===== 设计令牌：黑白灰三级 =====
+   bg0 最底层（主区背景） < bg1 面板（侧栏、抽屉、弹窗） < bg2 卡片和输入框（纯白）
+   强调只用纯黑；形状只切右上角 */
+:root{
+  --bg0:#E9E9E5; --bg1:#F4F4F1; --bg2:#FFFFFF;
+  --line:#D9D9D3; --line2:#C9C9C3;
+  --ink:#111111; --ink2:#45453F; --mute:#6B6B65; --faint:#8E8E88;
+  --dot-light:#D2D2CC; --dot-mid:#A6A69F;
+  --f-body:"Noto Sans SC",system-ui,sans-serif;
+  --f-num:"Tiny5","Noto Sans SC",monospace;
+  --f-label:"Silkscreen",monospace;
+  --f-mono:"JetBrains Mono","Noto Sans SC",monospace;
+  --ease:cubic-bezier(.2,.8,0,1);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;overflow:hidden}
+body{background:var(--bg0);color:var(--ink);font:400 14px/1.6 var(--f-body);-webkit-font-smoothing:antialiased;font-synthesis:none}
+button,input,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+[hidden]{display:none!important}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.label{font:400 9px/1 var(--f-label);letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+.mono{font-family:var(--f-mono)}
+.num{font-family:var(--f-num)}
+
+/* 右上角倒角：--k 是倒角边长 */
+.cut{clip-path:polygon(0 0,calc(100% - var(--k,10px)) 0,100% var(--k,10px),100% 100%,0 100%);transition:clip-path .22s var(--ease),background-color .15s,background-size .22s var(--ease)}
+/* 悬浮指示：能点的东西平时是完整直角，鼠标移上去 / 键盘聚焦时切掉右上角 */
+button.cut,a.cut{clip-path:polygon(0 0,100% 0,100% 0,100% 100%,0 100%)}
+button.cut:hover,a.cut:hover,button.cut:focus-visible,a.cut:focus-visible{clip-path:polygon(0 0,calc(100% - var(--k,10px)) 0,100% var(--k,10px),100% 100%,0 100%)}
+button.cut-line{background-size:0 0}
+button.cut-line:hover,button.cut-line:focus-visible{background-size:var(--k,10px) var(--k,10px)}
+/* 带描边的倒角块：斜边补一条线 */
+.cut-line{box-shadow:inset 0 0 0 1px var(--lc,var(--ink));
+  background-image:linear-gradient(to bottom left,transparent calc(50% - .6px),var(--lc,var(--ink)) calc(50% - .6px),var(--lc,var(--ink)) calc(50% + .6px),transparent calc(50% + .6px));
+  background-position:top right;background-size:var(--k,10px) var(--k,10px);background-repeat:no-repeat}
+
+.btn{--k:10px;display:inline-flex;align-items:center;justify-content:center;gap:8px;height:44px;padding:0 20px;border:0;cursor:pointer;
+  background-color:var(--ink);color:#fff;font-weight:500;text-decoration:none;white-space:nowrap;transition:background-color .15s,clip-path .22s var(--ease),background-size .22s var(--ease)}
+.btn:hover{background-color:#2E2E2A}
+.btn.ghost{background-color:var(--bg2);color:var(--ink)}
+.btn.ghost:hover{background-color:var(--bg1)}
+.btn.text{background:transparent;padding:0 12px;height:36px;text-decoration:underline;text-underline-offset:4px;color:var(--ink)}
+.btn.text:hover{color:var(--ink2)}
+
+/* ===== 顶栏 ===== */
+header{position:relative;z-index:5;flex:none;display:flex;align-items:center;gap:14px 28px;padding:14px 28px;background:var(--bg2);border-bottom:1px solid var(--ink)}
+.brand{display:flex;align-items:center;gap:12px}
+.brand *{pointer-events:none}
+.logo{display:block;width:38px;height:auto;color:var(--ink);flex:none}
+.brand b{display:block;font:700 17px/1 var(--f-body);letter-spacing:.02em}
+.brand .label{margin-top:6px;display:block}
+.root{display:flex;align-items:center;gap:10px;font-size:13px;padding-left:24px;border-left:1px solid var(--line)}
+.hd-right{flex:1 1 280px;display:flex;justify-content:flex-end;gap:12px}
+.winctl{align-self:flex-start;display:flex;margin:-14px -28px 0 -8px}
+.winctl button{width:46px;height:36px;display:grid;place-items:center;border:0;background:transparent;color:var(--ink2);cursor:pointer;transition:background-color .12s,color .12s}
+.winctl button:hover{background:var(--bg1);color:var(--ink)}
+.winctl button.close:hover{background:var(--ink);color:#fff}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#C9C9C4;border:3px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background-color:#9A9A95}
+.search{position:relative;flex:0 1 320px;min-width:200px;display:flex;align-items:center}
+.search svg{position:absolute;left:14px;pointer-events:none}
+.search input{--k:10px;width:100%;height:44px;padding:0 12px 0 40px;border:0;outline:none;background:var(--bg1)}
+.search input:focus{background:var(--bg2);box-shadow:inset 0 0 0 1px var(--ink)}
+input::placeholder,textarea::placeholder{color:var(--faint)}
+
+/* ===== 主体 ===== */
+.layout{flex:1;min-height:0;display:flex}
+aside{flex:0 0 268px;overflow-y:auto;padding:28px 16px 24px;background:var(--bg1);border-right:1px solid var(--line);display:flex;flex-direction:column;gap:32px}
+.sec-h{display:flex;align-items:baseline;justify-content:space-between;margin:0 10px 10px}
+.sec-h h2{margin:0;font-size:13px;font-weight:700}
+.st-row{--k:8px;display:flex;align-items:center;gap:12px;width:100%;min-height:42px;padding:0 12px;border:0;background:transparent;text-align:left;cursor:pointer;transition:background-color .15s,clip-path .22s var(--ease)}
+.st-row:hover{background:#EAEAE6}
+.st-row[aria-pressed=true]{background:var(--ink);color:#fff;font-weight:500}
+.st-row .gname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-row .n{margin-left:auto;font:400 14px/1 var(--f-num);opacity:.7}
+.ico{width:10px;height:10px;flex:none;display:inline-block}
+.ico.s1{background:var(--ink)}
+.ico.s2{box-shadow:inset 0 0 0 1.5px var(--ink)}
+.ico.s3{background:radial-gradient(circle,var(--ink2) .9px,transparent 1.2px) 0 0/3px 3px;box-shadow:inset 0 0 0 1px var(--faint)}
+.ico.s4{box-shadow:inset 0 0 0 1px var(--faint);background:repeating-linear-gradient(45deg,var(--faint) 0 1px,transparent 1px 3px)}
+.ico.s0{box-shadow:inset 0 0 0 1px var(--faint);background:linear-gradient(135deg,var(--ink) 0 50%,transparent 0)}
+[aria-pressed=true] .ico.s1,[aria-pressed=true] .ico.s4{box-shadow:inset 0 0 0 1px var(--faint);background:repeating-linear-gradient(45deg,var(--faint) 0 1px,transparent 1px 3px)}
+.ico.s0{background:#fff;box-shadow:none}
+[aria-pressed=true] .ico.s2{box-shadow:inset 0 0 0 1.5px #fff}
+[aria-pressed=true] .ico.s3{background:radial-gradient(circle,#fff .9px,transparent 1.2px) 0 0/3px 3px;box-shadow:inset 0 0 0 1px #fff}
+.tags{display:flex;flex-wrap:wrap;gap:6px;padding:0 6px}
+.tag{height:32px;padding:0 12px;border:0;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line);cursor:pointer;font-size:13px;transition:box-shadow .15s}
+.tag:hover{box-shadow:inset 0 0 0 1px var(--ink2)}
+.tag[aria-pressed=true]{background:var(--ink);color:#fff;box-shadow:none}
+.demo{margin-top:auto;padding:14px 10px 0;border-top:1px dashed var(--line2)}
+.demo .label{display:block;margin-bottom:8px}
+.seg{display:flex;gap:2px;background:var(--line);padding:2px}
+.seg button{flex:1;height:32px;border:0;background:var(--bg1);font-size:12px;cursor:pointer}
+.seg button[aria-pressed=true]{background:var(--ink);color:#fff}
+
+main{position:relative;flex:1;min-width:0;overflow:hidden;isolation:isolate}
+#view{position:absolute;inset:0;overflow-y:auto;padding:32px 36px 96px}
+#bgfx{position:absolute;inset:0;width:100%;height:100%;z-index:-1;pointer-events:none}
+.main-h{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:26px}
+.main-h h1{margin:8px 0 0;font:700 28px/1.15 var(--f-body)}
+.count{font-size:13px;color:var(--ink2);background:var(--bg0);padding:2px 6px}
+.count .num{font-size:17px;color:var(--ink)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:26px 22px}
+
+/* 卡片：白色一层，叠在灰底上；悬浮时上浮 + 投影，同时切掉右上角 */
+.card-wrap{position:relative;transition:transform .25s var(--ease),filter .25s}
+.pick{position:absolute;z-index:2;top:10px;left:10px;width:26px;height:26px;display:grid;place-items:center;padding:0;border:0;background:rgba(255,255,255,.94);box-shadow:inset 0 0 0 1.5px var(--ink);color:transparent;cursor:pointer;opacity:0;transition:opacity .15s,background-color .12s,color .12s}
+.card-wrap:hover .pick,body.selecting .pick,.pick:focus-visible{opacity:1}
+.card-wrap.sel .pick{opacity:1;background:var(--ink);color:#fff}
+.card-wrap.sel::after{content:'';position:absolute;inset:-5px;box-shadow:0 0 0 2px var(--ink);pointer-events:none}
+.annbar{--k:10px;display:flex;align-items:center;gap:12px;margin:-8px 0 22px;padding:6px 6px 6px 16px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line);font-size:13px;color:var(--ink2)}
+.annbar span{flex:1}
+.annbar b{color:var(--ink);font:500 14px/1 var(--f-mono)}
+.ign{padding:8px 12px 0;font-size:12px;color:var(--faint)}
+.ign button{border:0;background:none;padding:0;color:var(--ink2);font-size:12px;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.card-wrap:hover{transform:translateY(-3px);filter:drop-shadow(0 6px 0 rgba(17,17,17,.08))}
+.card{--k:12px;display:flex;flex-direction:column;width:100%;padding:0;border:0;background:var(--bg2);text-align:left;cursor:pointer}
+.thumb{position:relative;aspect-ratio:16/9;background:#161616;overflow:hidden}
+.thumb canvas,.thumb img{display:block;width:100%;height:100%}
+.thumb.empty{background:var(--bg1)}
+.thumb .hint{position:absolute;left:12px;bottom:10px;font-size:12px;line-height:1.5;color:var(--ink2)}
+.thumb .hint b{display:block;color:var(--ink);font-weight:500}
+.info{padding:13px 16px 15px;display:flex;flex-direction:column;gap:5px}
+.r1{display:flex;align-items:baseline;gap:10px}
+.r1 .name{flex:1;min-width:0;font-weight:500;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.r1 .date{font:400 12px/1 var(--f-mono);color:var(--faint)}
+.r2{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2);min-width:0}
+.r2 .ico{width:8px;height:8px}
+.r2 .st{color:var(--ink)}
+.r2 .sep{color:var(--line2)}
+.r2 .tg{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 空状态、无结果、扫描 */
+.empty-state{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center}
+.empty-state canvas{width:360px;max-width:100%;height:220px}
+.empty-state h1{margin:0;font:700 28px/1.3 var(--f-body)}
+.empty-state p{margin:0;max-width:30em;text-wrap:balance;color:var(--ink2);line-height:1.8}
+.empty-state .acts{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:8px}
+.nomatch{padding:40px 24px;display:flex;flex-direction:column;align-items:center;gap:12px;background:var(--bg2);text-align:center}
+.nomatch canvas{width:240px;height:120px}
+.scan{--k:12px;display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px;padding:16px 20px;margin-bottom:26px;background:var(--ink);color:#fff}
+.scan .label{color:#fff}
+.scan .blink{width:8px;height:8px;background:#fff;animation:blink 1s steps(1) infinite}
+.scan .found{margin-left:auto}
+.scan .found .num{font-size:18px}
+.scan .bar{flex:1 1 100%;height:4px;background:#3A3A36}
+.scan .bar i{display:block;height:4px;background:#fff;width:0;transition:width .3s}
+.skel .bar1{height:12px;width:58%;background:#ECECE8}
+.skel .bar2{height:10px;width:36%;background:#F2F2EF}
+@keyframes blink{50%{opacity:0}}
+
+/* ===== 遮罩、弹窗、抽屉 ===== */
+.scrim{position:fixed;inset:0;z-index:20;background:rgba(17,17,17,.32);opacity:0;pointer-events:none;transition:opacity .25s}
+.scrim.on{opacity:1;pointer-events:auto}
+.modal{--k:16px;position:fixed;z-index:30;left:50%;top:50%;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;
+  background:var(--bg1);transform:translate(-50%,-48%);opacity:0;pointer-events:none;transition:opacity .2s,transform .3s var(--ease)}
+.modal.on{opacity:1;transform:translate(-50%,-50%);pointer-events:auto}
+.drawer{position:fixed;z-index:30;top:0;right:0;bottom:0;width:min(460px,100vw);display:flex;flex-direction:column;background:var(--bg0);border-left:1px solid var(--ink);
+  transform:translateX(100%);transition:transform .35s var(--ease)}
+.drawer.on{transform:none}
+.pane-h{position:relative;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:24px 26px 18px;overflow:hidden}
+.pane-h canvas{position:absolute;right:0;top:0;width:260px;height:110px;pointer-events:none}
+.pane-h h2{position:relative;margin:8px 0 0;font:700 22px/1.25 var(--f-body)}
+.pane-h .label{position:relative}
+.x{position:relative;width:44px;height:44px;display:grid;place-items:center;border:0;background:var(--bg2);cursor:pointer}
+.x:hover{background:var(--ink);color:#fff}
+.pane-b{flex:1;overflow:auto;padding:4px 26px 22px;display:flex;flex-direction:column;gap:20px}
+.pane-f{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:16px 26px 20px;background:var(--bg2);border-top:1px solid var(--line)}
+.field{display:flex;flex-direction:column;gap:8px}
+.field>label,.field>.fl{font-size:13px;font-weight:500;display:flex;justify-content:space-between;align-items:baseline}
+.inp{--k:10px;--lc:var(--line2);width:100%;height:44px;padding:0 14px;border:0;outline:none;background-color:var(--bg2)}
+.inp:focus{--lc:var(--ink)}
+textarea.inp{height:auto;padding:12px 14px;line-height:1.7;resize:vertical}
+.warn{font-size:12px;color:var(--ink2)}
+.tpls{display:flex;gap:10px}
+.tpl{--k:10px;flex:1;padding:14px 16px;border:0;text-align:left;background:var(--ink);color:#fff}
+.tpl small{display:block;margin-top:4px;font-size:12px;color:#CFCFC9}
+.tpl.off{background:var(--bg2);color:var(--mute);box-shadow:inset 0 0 0 1px var(--line);cursor:not-allowed}
+.tpl.off small{color:var(--faint)}
+.tpl .label{float:right;color:#A6A69F}
+.pathbox{display:flex;align-items:center;gap:8px;padding-left:14px}
+.pathbox span{flex:1;font:400 13px var(--f-mono)}
+.chk{display:flex;align-items:center;gap:10px;min-height:32px;cursor:pointer}
+.chk input{width:18px;height:18px;margin:0;accent-color:var(--ink)}
+.chk small{color:var(--mute);font-size:12px}
+pre.tree{margin:0;padding:16px 18px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line);font:400 12.5px/1.7 var(--f-mono);color:var(--ink2);overflow-x:auto}
+pre.tree b{color:var(--ink);font-weight:500}
+
+/* 抽屉里的分组：白色块叠在灰底上 */
+.block{background:var(--bg2);padding:16px 18px;display:flex;flex-direction:column;gap:10px}
+.d-thumb{--k:14px;aspect-ratio:16/9;background:#161616}
+.d-thumb canvas,.d-thumb img{display:block;width:100%;height:100%}
+.d-name{margin:0;font:700 22px/1.3 var(--f-body)}
+.d-path{font:400 12px/1.5 var(--f-mono);color:var(--ink2);word-break:break-all}
+.d-meta{font-size:12px;color:var(--mute)}
+.acts2{display:flex;gap:10px}
+.acts2 .btn{flex:1}
+.stseg{display:flex;gap:6px}
+.stseg button{flex:1;height:42px;display:flex;align-items:center;justify-content:center;gap:8px;border:0;background:var(--bg1);cursor:pointer}
+.stseg button:hover{background:#EAEAE6}
+.stseg button[aria-pressed=true]{background:var(--ink);color:#fff;font-weight:500}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;height:32px;padding-left:12px;background:var(--bg1);font-size:13px}
+.chip button{width:30px;height:30px;border:0;background:transparent;color:var(--mute);cursor:pointer;display:grid;place-items:center}
+.chip button:hover{color:var(--ink)}
+.addrow{display:flex;gap:8px}
+.addrow .inp{flex:1;height:40px;background-color:var(--bg1);box-shadow:none;background-image:none}
+.addrow .inp:focus{box-shadow:inset 0 0 0 1px var(--ink);background-color:var(--bg2)}
+.block .inp{background-color:var(--bg1);box-shadow:none;background-image:none}
+.block .inp:focus{background-color:var(--bg2);box-shadow:inset 0 0 0 1px var(--ink)}
+.saved{justify-content:flex-start;font-size:12px;color:var(--ink2)}
+.saved .label{color:var(--ink);transition:opacity .3s}
+
+.del-row{display:flex;align-items:center;gap:6px;margin-top:4px;padding-top:14px;border-top:1px solid var(--line)}
+.del-row .btn{color:var(--ink2);padding:0 8px}
+.del-row .btn:hover{color:var(--ink)}
+.del-row small{font-size:12px;color:var(--mute)}
+.modal.confirm{z-index:35;width:min(420px,calc(100vw - 32px))}
+.modal.confirm p{margin:0;line-height:1.8;color:var(--ink2)}
+.modal.confirm p b{color:var(--ink);font-weight:500}
+.bbar{--k:12px;position:fixed;z-index:15;left:calc(268px + (100vw - 268px) / 2);bottom:24px;width:max-content;max-width:calc(100vw - 268px - 32px);display:flex;flex-wrap:wrap;align-items:center;gap:2px;padding:6px;background:var(--ink);color:#fff;
+  transform:translate(-50%,24px);opacity:0;pointer-events:none;transition:opacity .2s,transform .3s var(--ease)}
+.bbar.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.bbar .bn{padding:0 12px 0 10px;font-size:13px;white-space:nowrap}
+.bbar .bn b{font:500 15px/1 var(--f-mono)}
+.bbar button{height:36px;padding:0 12px;border:0;background:transparent;color:#fff;font-size:13px;cursor:pointer;white-space:nowrap;transition:background-color .12s}
+.bbar button:hover,.bbar button[aria-expanded=true]{background:#2E2E2A}
+.bbar .vs{width:1px;height:20px;background:#3A3A36;margin:0 4px}
+.bbar .quiet{color:#B9B9B2}
+.bpop{--k:10px;position:fixed;z-index:16;width:320px;max-height:min(420px,calc(100vh - 160px));overflow-y:auto;display:none;flex-direction:column;gap:8px;padding:14px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--ink),0 8px 0 rgba(17,17,17,.08)}
+.bpop.on{display:flex}
+.bpop .ph{font-size:12px;color:var(--mute)}
+.bpop .pe{font-size:13px;color:var(--faint)}
+.bpop .tags{display:flex;flex-wrap:wrap;gap:6px}
+.bpop .tag .n{font:400 11px/1 var(--f-mono);color:var(--faint);margin-left:4px}
+.bpop .addrow{display:flex;gap:6px}
+.bpop .addrow .inp{flex:1;height:40px;background-color:var(--bg1)}
+.bpop .dests{display:flex;flex-direction:column}
+.modal.ann{width:min(780px,calc(100vw - 32px))}
+.ann-intro{margin:0;font-size:13px;line-height:1.8;color:var(--ink2)}
+.ann-opts{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 24px;padding:14px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line)}
+.ann-opts .field{min-width:260px}
+.ann-sec{display:flex;flex-direction:column;gap:4px}
+.ann-sec h3{margin:6px 0 0;font-size:14px;font-weight:500;display:flex;justify-content:space-between;align-items:baseline}
+.ann-sec .ann-sub{margin:0 0 6px;font-size:12px;color:var(--mute)}
+.ann-row{display:grid;grid-template-columns:20px minmax(0,1fr) 128px;gap:6px 10px;align-items:center;padding:8px 10px;background:var(--bg2);transition:opacity .15s}
+.ann-row.off{opacity:.45}
+.ann-row input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--ink)}
+.ann-row .inp{height:34px;padding:0 10px;font-size:13px;background-color:var(--bg1)}
+.ann-row .sub{grid-column:2 / 4;font-size:12px;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.clist{display:block;margin-top:8px;font-size:12px;color:var(--mute)}
+.toast{--k:10px;position:fixed;z-index:40;left:50%;bottom:28px;transform:translate(-50%,20px);padding:12px 18px;background:var(--ink);color:#fff;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s,transform .3s var(--ease)}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+
+@media (max-width:760px){
+  header{padding:12px 16px}
+  .root{display:none}
+  .winctl{margin:-12px -16px 0 -8px}
+  aside{flex-basis:200px}
+  #view{padding:24px 16px 56px}
+  .demo{margin-top:0}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header data-tauri-drag-region>
+  <div class="brand" data-tauri-drag-region>
+    <svg class="logo" viewBox="280 290 720 700" role="img" aria-label="TD学长"><path fill="currentColor" fill-rule="evenodd" transform="translate(-57 0)" d="M387.31 299.43 A13.00 13.00 0 0 1 399.81 290.00 L972.77 290.00 A13.00 13.00 0 0 1 985.27 306.57 L975.16 341.92 A37.72 37.72 0 0 0 1011.43 390.00 L1044.19 390.00 A13.00 13.00 0 0 1 1056.69 406.57 L921.27 880.57 A13.00 13.00 0 0 1 908.77 890.00 L856.29 890.00 A50.00 50.00 0 0 0 808.21 926.26 L792.69 980.57 A13.00 13.00 0 0 1 780.19 990.00 L407.23 990.00 A13.00 13.00 0 0 1 394.73 973.43 L514.65 553.74 A50.00 50.00 0 0 0 466.57 490.00 L350.09 490.00 A13.00 13.00 0 0 1 337.59 473.43 Z M670.57 490.00 A50.00 50.00 0 0 0 622.50 526.26 L565.35 726.26 A50.00 50.00 0 0 0 613.43 790.00 L809.43 790.00 A50.00 50.00 0 0 0 857.50 753.74 L914.65 553.74 A50.00 50.00 0 0 0 866.57 490.00 Z"/></svg>
+    <div><b>工程启动器</b><span class="label">TD Launcher · [Name TBD]</span></div>
+  </div>
+  <div class="root">
+    <span class="label">Root</span>
+    <span class="mono" id="rootPath">未选择</span>
+    <button class="btn text" type="button" data-pick-root>更改</button>
+  </div>
+  <div class="hd-right">
+    <label class="search">
+      <span class="sr">搜索工程</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6B6B65" stroke-width="2" stroke-linecap="square" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+      <input class="cut" id="q" type="search" placeholder="搜索工程名称">
+    </label>
+    <button class="btn cut" type="button" id="openNew">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M12 4v16M4 12h16"/></svg>
+      新建工程
+    </button>
+  </div>
+  <div class="winctl">
+    <button type="button" id="wMin" aria-label="最小化"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    <button type="button" id="wMax" aria-label="最大化"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x=".6" y=".6" width="8.8" height="8.8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    <button type="button" id="wClose" class="close" aria-label="关闭"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M.5.5l9 9M9.5.5l-9 9" stroke="currentColor" stroke-width="1.2"/></svg></button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside>
+    <section>
+      <div class="sec-h"><h2>状态</h2><span class="label">Status</span></div>
+      <div id="stList"></div>
+      <div id="ignRow"></div>
+    </section>
+    <section>
+      <div class="sec-h"><h2>标签</h2><span class="label">Tags</span></div>
+      <div class="tags" id="tagList"></div>
+    </section>
+    <section id="grpSec" hidden>
+      <div class="sec-h"><h2>文件夹</h2><span class="label">Folders</span></div>
+      <div id="grpList"></div>
+    </section>
+    <button class="btn text" type="button" id="clear" hidden style="margin:-14px 0 0 8px;align-self:flex-start">清除筛选</button>
+  </aside>
+
+  <main id="main">
+    <canvas id="bgfx" aria-hidden="true"></canvas>
+    <div id="view"></div>
+  </main>
+</div>
+
+<!-- 新建工程 -->
+<div class="scrim" id="scrim"></div>
+<div class="modal cut" id="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <div class="pane-h">
+    <canvas id="mfx" aria-hidden="true"></canvas>
+    <div><span class="label">New Project</span><h2 id="mTitle">新建工程</h2></div>
+    <button class="x" type="button" data-close aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg></button>
+  </div>
+  <div class="pane-b">
+    <div class="field">
+      <label for="npName">工程名称</label>
+      <input class="inp cut cut-line" id="npName" type="text" placeholder="例如：粒子雨" value="">
+      <div class="warn" id="npWarn" hidden>已自动去掉系统不允许的字符（: ? * / \ 等）</div>
+    </div>
+    <div class="field">
+      <div class="fl">模板</div>
+      <div class="tpls">
+        <div class="tpl cut"><span class="label">Default</span>默认模板<small>素材 / 组件 / 脚本 / 输出</small></div>
+        <div class="tpl off">演出 · 装置 · 接单<small>多套模板，以后再做</small></div>
+      </div>
+    </div>
+    <div class="field">
+      <div class="fl">保存位置</div>
+      <div class="inp cut cut-line pathbox"><span id="npRoot"></span><button class="btn text" type="button" data-pick-root>更改</button></div>
+    </div>
+    <label class="chk"><input type="checkbox" id="npDate" checked><span>文件夹名前面加日期</span><small>企划 §10 待定</small></label>
+    <div class="field">
+      <div class="fl"><span>将会创建</span><span class="label">Preview</span></div>
+      <pre class="tree" id="npTree"></pre>
+    </div>
+  </div>
+  <div class="pane-f">
+    <button class="btn text" type="button" data-close>取消</button>
+    <button class="btn cut" type="button" id="npCreate">创建并用 TD 打开</button>
+  </div>
+</div>
+
+<!-- 工程详情 -->
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dName">
+  <div class="pane-h" style="background:var(--bg2);border-bottom:1px solid var(--line);padding-bottom:16px">
+    <canvas id="dfx" aria-hidden="true"></canvas>
+    <div><span class="label">Project</span><h2 style="font-size:16px;margin-top:6px">工程详情</h2></div>
+    <button class="x" type="button" data-close aria-label="关闭" style="background:var(--bg1)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg></button>
+  </div>
+  <div class="pane-b" style="padding-top:20px;gap:12px">
+    <div class="d-thumb cut" id="dThumb"></div>
+    <div class="block">
+      <h3 class="d-name" id="dName"></h3>
+      <div class="d-path" id="dPath"></div>
+      <div class="d-meta" id="dMeta"></div>
+      <div class="acts2" style="margin-top:6px">
+        <button class="btn cut" type="button" id="dOpen">用 TD 打开</button>
+        <button class="btn ghost cut cut-line" type="button" id="dReveal">在文件夹中显示</button>
+      </div>
+      <div class="field" id="dMainWrap" hidden style="margin-top:12px">
+        <div class="fl"><span>主文件 <small style="font-weight:400;color:var(--mute)">这个文件夹里有几个不同的 .toe，选一个用 TD 打开</small></span><span class="label">Main .toe</span></div>
+        <div class="seg" id="dMain"></div>
+      </div>
+    </div>
+    <div class="block">
+      <div class="sec-h" style="margin:0"><h2>状态</h2><span class="label">Status</span></div>
+      <div class="stseg" id="dStatus"></div>
+    </div>
+    <div class="block">
+      <div class="sec-h" style="margin:0"><h2>标签</h2><span class="label">Tags</span></div>
+      <div class="chips" id="dTags"></div>
+      <div class="addrow">
+        <label class="sr" for="dTagIn">新标签</label>
+        <input class="inp" id="dTagIn" type="text" placeholder="输入新标签，回车添加">
+        <button class="btn ghost cut-line" type="button" id="dTagAdd" style="height:40px;--k:0px">添加</button>
+      </div>
+    </div>
+    <div class="block">
+      <div class="field"><label for="dClient">客户 / 来源</label><input class="inp" id="dClient" type="text" placeholder="可留空"></div>
+      <div class="field"><label for="dNote">备注</label><textarea class="inp" id="dNote" rows="4" placeholder="随手记点什么"></textarea></div>
+    </div>
+    <div class="del-row">
+      <button class="btn text" type="button" id="dDel">删除工程</button>
+      <small>整个文件夹移到回收站，可以恢复</small>
+    </div>
+  </div>
+  <div class="pane-f saved"><span class="label" id="savedTag">Saved</span>改动自动保存到工程文件夹里的 project.json</div>
+</div>
+
+<!-- 老工程补标注（企划 §6.2） -->
+<div class="modal cut ann" id="ann" role="dialog" aria-modal="true" aria-labelledby="aTitle">
+  <div class="pane-h">
+    <canvas id="afx" aria-hidden="true"></canvas>
+    <div><span class="label">Annotate</span><h2 id="aTitle">识别并补标注</h2></div>
+    <button class="x" type="button" data-close aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg></button>
+  </div>
+  <div class="pane-b">
+    <p class="ann-intro">下面这些工程还没有 project.json。勾选的会写入一份标注，名字和日期是软件推测的，可以直接改；没勾的记为"忽略"，以后不再显示，可以在侧栏恢复。</p>
+    <div class="ann-opts">
+      <div class="field"><div class="fl">状态（统一设置）</div><div class="seg" id="aStatus"></div></div>
+      <label class="chk"><input type="checkbox" id="aGroupTag" checked><span>把分类文件夹名加成标签</span><small>如 01_商单 → 商单</small></label>
+    </div>
+    <div id="aList"></div>
+  </div>
+  <div class="pane-f">
+    <button class="btn text" type="button" data-close>取消</button>
+    <button class="btn cut" type="button" id="aGo">写入</button>
+  </div>
+</div>
+
+<!-- 批量操作栏（企划 §6.3） -->
+<div class="bbar cut" id="bbar" role="toolbar" aria-label="批量操作">
+  <span class="bn">已选 <b id="bN">0</b> 个</span>
+  <button type="button" data-bact="status" aria-expanded="false">改状态</button>
+  <button type="button" data-bact="tagadd" aria-expanded="false">加标签</button>
+  <button type="button" data-bact="tagrm" aria-expanded="false">去标签</button>
+  <button type="button" data-bact="move" aria-expanded="false">移动到…</button>
+  <button type="button" data-bact="del">移到回收站</button>
+  <span class="vs"></span>
+  <button type="button" class="quiet" data-bact="all">全选</button>
+  <button type="button" class="quiet" data-bact="none">取消选择</button>
+</div>
+<div class="bpop cut" id="bpop"></div>
+
+<!-- 确认框 -->
+<div class="modal cut confirm" id="cfm" role="alertdialog" aria-modal="true" aria-labelledby="cTitle" aria-describedby="cText">
+  <div class="pane-h">
+    <div><span class="label" id="cLabel">Delete</span><h2 id="cTitle">删除工程？</h2></div>
+  </div>
+  <div class="pane-b">
+    <p id="cText"></p>
+  </div>
+  <div class="pane-f">
+    <button class="btn text" type="button" id="cNo">取消</button>
+    <button class="btn cut" type="button" id="cYes">移到回收站</button>
+  </div>
+</div>
+
+<div class="toast cut" id="toast" role="status"></div>
+
+<script src="mock-tauri.js"></script>
+<script src="../src/app.js"></script>
+</body>
+</html>
