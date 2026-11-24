@@ -32,7 +32,7 @@ const IS_WIN = /Windows/i.test(navigator.userAgent);
 
 // 设置：只记在这台电脑上
 const flag = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v === '1'; };
-const cfg = { folderIcon: flag('folderIcon', false), datePrefix: flag('datePrefix', true), autoOpen: flag('autoOpen', true), autoRescan: flag('autoRescan', true) };
+const cfg = { folderIcon: flag('folderIcon', false), datePrefix: flag('datePrefix', true), autoOpen: flag('autoOpen', true), autoRescan: flag('autoRescan', true), groupByFolder: flag('groupByFolder', true) };
 function setCfg(k, v) { cfg[k] = v; try { localStorage.setItem(k, v ? '1' : '0'); } catch (e) {} }
 
 // 导入的工程：不在根目录里，只登记它们的位置，文件留在原处（企划 §3）
@@ -46,36 +46,6 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const today = () => { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
 const fmtTime = s => { if (!s) return ''; const d = new Date(s * 1000), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 const shortPath = p => p.replace(/\\/g, '/');
-
-/* ================= 渐变像素（有序抖动） =================
-   装饰用的静态图案：一块颜色从中心往外越来越稀，用 4×4 拜耳矩阵决定每个小方块画不画。
-   registerFx(canvas, { layers: [{ S, color, seed, clusters: [{ x, y, rx, ry }] }] })
-   x / y 是中心在画布里的比例位置，rx / ry 是半径（像素），S 越大方块越大。不做动画，只在尺寸变化时重画。 */
-const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-const fx = new Map();
-function hash(str) { let h = 0; for (const ch of str) h = (h * 31 + ch.charCodeAt(0)) % 99991; return h; }
-function registerFx(canvas, cfg) { if (!canvas) return; fx.set(canvas, cfg); drawFx(canvas, cfg); }
-function drawFx(c, cfg) {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2), w = c.clientWidth, h = c.clientHeight;
-  if (!w || !h || !cfg) return;
-  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
-  const ctx = c.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  for (const L of cfg.layers) {
-    const P = Math.max(4, Math.round(L.S / 4)), ox = (L.seed || 0) & 3, oy = ((L.seed || 0) >> 2) & 3;
-    ctx.fillStyle = L.color;
-    for (let j = 0; j * P < h; j++) for (let i = 0; i * P < w; i++) {
-      const x = (i + 0.5) * P, y = (j + 0.5) * P;
-      let v = 0;
-      // 浓度：中心最密，到 1.7 倍半径处降到 0
-      for (const k of L.clusters) v = Math.max(v, 1 - Math.hypot((x - k.x * w) / k.rx, (y - k.y * h) / k.ry) / 1.7);
-      if (v * 0.9 > (BAYER[((j + oy) & 3) * 4 + ((i + ox) & 3)] + 0.5) / 16) ctx.fillRect(i * P, j * P, P, P);
-    }
-  }
-}
-function redrawFx() { for (const [c, cfg] of fx) { if (!c.isConnected) fx.delete(c); else drawFx(c, cfg); } }
-let fxT; window.addEventListener('resize', () => { clearTimeout(fxT); fxT = setTimeout(redrawFx, 120); });
 
 /* ================= 数据 ================= */
 function normalize(raw) {
@@ -209,7 +179,7 @@ function renderSide() {
 function cardHTML(p) {
   const th = thumbSrc(p);
   return `<div class="card-wrap${ui.sel.has(p.id) ? ' sel' : ''}" data-id="${esc(p.id)}"><button class="pick" type="button" data-pick="${esc(p.id)}" aria-pressed="${ui.sel.has(p.id)}" aria-label="选择 ${esc(p.name)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"><path d="M4 12.5l5 5L20 6.5"/></svg></button><button class="card cut" type="button" data-open="${esc(p.id)}">
-    <div class="thumb${th ? '' : ' empty'}">${th ? `<img src="${th}" alt="" loading="lazy">` : `<canvas data-ph="${hash(p.id)}" aria-hidden="true"></canvas><div class="hint"><b>还没有缩略图</b>${p.toe ? '用 TD 打开并保存一次即可生成' : '这个文件夹里还没有 .toe'}</div>`}</div>
+    <div class="thumb${th ? '' : ' empty'}">${th ? `<img src="${th}" alt="" loading="lazy">` : `<div class="hint"><b>还没有缩略图</b>${p.toe ? '用 TD 打开并保存一次即可生成' : '这个文件夹里还没有 .toe'}</div>`}</div>
     <div class="info">
       <div class="r1"><span class="name" title="${esc(p.name)}">${esc(p.name)}</span>${p.external ? '<span class="ext" title="文件在工程根目录外面，留在原处">外部</span>' : ''}<span class="date">${esc(p.created)}</span></div>
       <div class="r2"><i class="ico ${ICON[p.status]}"></i><span class="st">${p.status}</span><span class="sep">/</span><span class="tg">${p.tags.map(esc).join(' · ') || '无标签'}</span></div>
@@ -218,7 +188,6 @@ function cardHTML(p) {
 
 function emptyHTML(title, text, actions) {
   return `<div class="empty-state">
-    <canvas id="emptyfx" aria-hidden="true"></canvas>
     <span class="label">${root ? 'No projects yet' : 'Welcome'}</span>
     <h1>${title}</h1><p>${text}</p><div class="acts">${actions}</div></div>`;
 }
@@ -231,35 +200,34 @@ function renderView() {
     v.innerHTML = emptyHTML('读不到这个文件夹', esc(ui.error), '<button class="btn cut" type="button" data-pick-root>换一个文件夹</button><button class="btn ghost cut cut-line" type="button" data-rescan>重试</button>');
   } else if (ui.scanning) {
     v.innerHTML = `<div class="scan cut"><span class="blink"></span><span class="label">Scanning</span><span>正在扫描 <span class="mono">${esc(shortPath(root))}</span></span></div>
-      <div class="grid">${[0, 1, 2, 3, 4, 5].map(i => `<div class="card cut skel"><div class="thumb empty"><canvas data-sk="${i}" aria-hidden="true"></canvas></div><div class="info" style="gap:10px;padding-bottom:18px"><div class="bar1"></div><div class="bar2"></div></div></div>`).join('')}</div>`;
-    v.querySelectorAll('canvas[data-sk]').forEach(c => { const i = +c.dataset.sk; registerFx(c, { layers: [{ S: 26, color: '#C9C9C3', seed: 10 + i, keep: 0.8, linkP: 0.7, clusters: [{ x: 0.5, y: 0.5, rx: 120, ry: 60 }] }] }); });
+      <div class="grid">${[0, 1, 2, 3, 4, 5].map(i => `<div class="card cut skel"><div class="thumb empty"></div><div class="info" style="gap:10px;padding-bottom:18px"><div class="bar1"></div><div class="bar2"></div></div></div>`).join('')}</div>`;
     return;
   } else if (!projects.length) {
     v.innerHTML = emptyHTML('这里还没有工程', '新建一个工程，或者把工程根目录换成你已有 TD 工程所在的文件夹。',
       '<button class="btn cut" type="button" data-new>新建第一个工程</button><button class="btn ghost cut cut-line" type="button" data-import>导入已有工程</button><button class="btn ghost cut cut-line" type="button" data-pick-root>换一个根目录</button>');
   } else {
     const q = ui.q.trim().toLowerCase();
-    const list = projects.filter(p => (ui.status === '全部' || p.status === ui.status) && (!ui.tag || p.tags.includes(ui.tag)) &&
+    let list = projects.filter(p => (ui.status === '全部' || p.status === ui.status) && (!ui.tag || p.tags.includes(ui.tag)) &&
       (ui.group === null || topGroup(p) === ui.group) &&
       (!q || p.name.toLowerCase().includes(q) || p.folder.toLowerCase().includes(q) || p.group.toLowerCase().includes(q)));
+    // 按分类文件夹分组：根目录下第一层文件夹各占一段，根目录直接放的排最前，外部导入的排最后；组内仍是最近修改在前
+    let secs = null;
+    if (cfg.groupByFolder && ui.group === null) {
+      const rank = g => (g === '' ? 0 : g === '外部导入' ? 2 : 1);
+      const names = [...new Set(list.map(topGroup))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b, 'zh'));
+      if (names.length > 1) { secs = names.map(g => [g, list.filter(p => topGroup(p) === g)]); list = secs.flatMap(s => s[1]); }
+    }
     ui.visible = list.map(p => p.id);
     const un = projects.filter(p => !p.hasMeta).length;
     const annbar = un && (ui.status === '全部' || ui.status === '未标注') ? `<div class="annbar cut"><i class="ico s4"></i><span>有 <b>${un}</b> 个工程还没有 project.json，可以一次补上标注</span><button class="btn text" type="button" data-ann>识别并补标注</button></div>` : '';
     let head = ui.status === '全部' ? '全部工程' : ui.status; if (ui.tag) head += ' · ' + ui.tag; if (ui.group !== null) head += ' · ' + (ui.group || '根目录');
     v.innerHTML = `<div class="main-h"><div><span class="label">Projects</span><h1>${esc(head)}</h1></div>
-      <div class="count">共 <span class="num">${list.length}</span> 个工程 · 最近修改在前 · 按住 Ctrl 点卡片可多选</div></div>
-      ${annbar}${list.length ? `<div class="grid">${list.map(cardHTML).join('')}</div>` :
-        `<div class="nomatch"><canvas id="nmfx" aria-hidden="true"></canvas><div style="font-weight:500">没有符合条件的工程</div><button class="btn ghost cut cut-line" type="button" data-clear>清除筛选</button></div>`}`;
-    v.querySelectorAll('canvas[data-ph]').forEach(c => {
-      registerFx(c, { layers: [{ S: 26, color: '#BDBDB6', seed: +c.dataset.ph, keep: 0.8, linkP: 0.65, clusters: [{ x: 0.66, y: 0.4, rx: 95, ry: 55 }] }] });
-    });
-    if ($('#nmfx')) registerFx($('#nmfx'), { layers: [{ S: 24, color: '#C4C4BE', seed: 2, keep: 0.85, linkP: 0.7, clusters: [{ x: 0.5, y: 0.5, rx: 80, ry: 40 }] }] });
+      <div class="count">共 <span class="num">${list.length}</span> 个工程 · ${secs ? '按文件夹分组，组内最近修改在前' : '最近修改在前'} · 按住 Ctrl 点卡片可多选</div></div>
+      ${annbar}${secs ? secs.map(([g, arr]) => `<section class="grp"><div class="grp-h"><h2>${esc(g || '根目录')}</h2><span class="num">${arr.length}</span><button class="btn text" type="button" data-grp="${esc(g)}">只看这一类</button></div><div class="grid">${arr.map(cardHTML).join('')}</div></section>`).join('') :
+        list.length ? `<div class="grid">${list.map(cardHTML).join('')}</div>` :
+        `<div class="nomatch"><div style="font-weight:500">没有符合条件的工程</div><button class="btn ghost cut cut-line" type="button" data-clear>清除筛选</button></div>`}`;
     return;
   }
-  registerFx($('#emptyfx'), { layers: [
-    { S: 34, color: '#C4C4BE', seed: 5, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.4, y: 0.56, rx: 125, ry: 80 }] },
-    { S: 34, color: '#111111', seed: 9, keep: 1, linkP: 0.9, clusters: [{ x: 0.78, y: 0.28, rx: 50, ry: 42 }] }
-  ] });
 }
 function render() { renderSide(); renderView(); syncSel(); }
 
@@ -309,7 +277,6 @@ function openNew() {
   $('#npCreate').textContent = cfg.autoOpen ? '创建并用 TD 打开' : '创建';
   updateTree(); syncRoot();
   $('#scrim').classList.add('on'); $('#modal').classList.add('on');
-  registerFx($('#mfx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 4, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.3, rx: 110, ry: 70 }] }] });
   setTimeout(() => $('#npName').focus(), 60);
 }
 
@@ -317,9 +284,8 @@ function openNew() {
 const cur = () => projects.find(x => x.id === ui.openId);
 function refreshDetailHead(p) {
   const th = thumbSrc(p);
-  $('#dThumb').innerHTML = th ? `<img src="${th}" alt="${esc(p.name)} 的缩略图">` : '<canvas id="dph" aria-hidden="true"></canvas>';
+  $('#dThumb').innerHTML = th ? `<img src="${th}" alt="${esc(p.name)} 的缩略图">` : '';
   $('#dThumb').style.background = th ? '#161616' : 'var(--bg1)';
-  if (!th) registerFx($('#dph'), { layers: [{ S: 30, color: '#BDBDB6', seed: hash(p.id), keep: 0.85, linkP: 0.65, clusters: [{ x: 0.5, y: 0.5, rx: 150, ry: 80 }] }] });
   $('#dName').textContent = p.name;
   $('#dPath').textContent = shortPath(p.path);
   $('#dPath').title = p.external ? '外部导入：文件在工程根目录外面，留在原处' : p.group ? '分类：' + p.group : '';
@@ -343,7 +309,6 @@ function openDetail(id) {
   $('#dClient').value = p.client; $('#dNote').value = p.note;
   renderDetailBits(p);
   $('#scrim').classList.add('on'); $('#drawer').classList.add('on');
-  registerFx($('#dfx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 8, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.4, rx: 100, ry: 60 }] }] });
 }
 function renderDetailBits(p) {
   $('#dStatus').innerHTML = STATUSES.map(s => `<button type="button" data-dst="${s}" aria-pressed="${p.status === s}"><i class="ico ${ICON[s]}"></i>${s}</button>`).join('');
@@ -581,7 +546,6 @@ function openAnn() {
   $('#aList').style.display = 'flex'; $('#aList').style.flexDirection = 'column'; $('#aList').style.gap = '18px';
   renderAnnOpts(); updateAnn();
   $('#scrim').classList.add('on'); $('#ann').classList.add('on');
-  registerFx($('#afx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 12, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.35, rx: 120, ry: 70 }] }] });
 }
 function renderAnnOpts() {
   $('#aStatus').innerHTML = STATUSES.map(s => `<button type="button" data-ast="${s}" aria-pressed="${annStatus === s}">${s}</button>`).join('');
@@ -662,7 +626,6 @@ function openImp(list, notes) {
       <div class="sub">${esc(shortPath(p.path))}${p.toe ? ' · ' + esc(baseName(p.toe)) : ' · 没有 .toe'}${p.hasMeta ? ' · 已有标注' : ''}</div></div>`).join('')}</div>`;
   updateImp();
   $('#scrim').classList.add('on'); $('#imp').classList.add('on');
-  registerFx($('#ifx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 14, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.35, rx: 120, ry: 70 }] }] });
 }
 function updateImp() {
   let on = 0;
@@ -830,15 +793,15 @@ function openSet() {
   $('#sIcon').checked = cfg.folderIcon && IS_WIN; $('#sIcon').disabled = !IS_WIN;
   $('#sIconRow').classList.toggle('off', !IS_WIN);
   if (!IS_WIN) $('#sIconRow').title = '目前只支持 Windows';
-  $('#sDate').checked = cfg.datePrefix; $('#sOpen').checked = cfg.autoOpen; $('#sRescan').checked = cfg.autoRescan;
+  $('#sDate').checked = cfg.datePrefix; $('#sOpen').checked = cfg.autoOpen; $('#sRescan').checked = cfg.autoRescan; $('#sGroup').checked = cfg.groupByFolder;
   renderSetInfo(); drawLogoPrev();
   $('#scrim').classList.add('on'); $('#set').classList.add('on');
-  registerFx($('#sfx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 16, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.3, rx: 110, ry: 70 }] }] });
 }
 $('#sIcon').addEventListener('change', e => { setCfg('folderIcon', e.target.checked); if (e.target.checked) iconFailed.clear(); syncIcons(e.target.checked, false); });
 $('#sDate').addEventListener('change', e => setCfg('datePrefix', e.target.checked));
 $('#sOpen').addEventListener('change', e => setCfg('autoOpen', e.target.checked));
 $('#sRescan').addEventListener('change', e => setCfg('autoRescan', e.target.checked));
+$('#sGroup').addEventListener('change', e => { setCfg('groupByFolder', e.target.checked); render(); });
 
 /* ================= 通用 ================= */
 function closeAll(keepScrim) {
@@ -896,11 +859,6 @@ document.addEventListener('keydown', e => {
 // 从 TD 切回来时重新扫一遍，刚保存的缩略图就能出现
 window.addEventListener('focus', () => { if (root && cfg.autoRescan) scan({ quiet: true }); });
 
-registerFx($('#bgfx'), { layers: [
-  { S: 40, color: '#D0D0CA', seed: 3, keep: 0.88, linkP: 0.6, clusters: [{ x: 0.9, y: 0.88, rx: 280, ry: 210 }, { x: 0.25, y: 1.02, rx: 300, ry: 130 }] },
-  { S: 40, color: '#A6A69F', seed: 6, keep: 0.9, linkP: 0.75, clusters: [{ x: 0.96, y: 0.07, rx: 130, ry: 110 }] }
-] });
-new ResizeObserver(() => drawFx($('#bgfx'), fx.get($('#bgfx')))).observe($('#main'));
 
 syncRoot();
 loadLogo();
