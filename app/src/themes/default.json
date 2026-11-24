@@ -1,0 +1,42 @@
+{
+  "format": 1,
+  "id": "default",
+  "name": "默认",
+  "description": "黑白灰",
+  "light": {
+    "bg0": "#E9E9E5",
+    "bg1": "#F4F4F1",
+    "bg2": "#FFFFFF",
+    "line": "#D9D9D3",
+    "line2": "#C9C9C3",
+    "ink": "#111111",
+    "ink2": "#45453F",
+    "mute": "#6B6B65",
+    "faint": "#8E8E88",
+    "onInk": "#FFFFFF",
+    "onInkMute": "#B9B9B2",
+    "inkHover": "#2E2E2A",
+    "inkLine": "#3A3A36",
+    "hover": "#EAEAE6",
+    "thumb": "#161616",
+    "scroll": "#C9C9C4",
+    "scrollHover": "#9A9A95",
+    "skel1": "#ECECE8",
+    "skel2": "#F2F2EF",
+    "lift": "rgba(17,17,17,.08)",
+    "scrim": "rgba(17,17,17,.32)"
+  },
+  "dark": {
+    "bg0": "#0E0E0D",
+    "bg1": "#171716",
+    "bg2": "#20201E",
+    "line": "#2C2C29",
+    "line2": "#3D3D39",
+    "ink": "#F2F2EE",
+    "ink2": "#C4C4BD",
+    "mute": "#96968F",
+    "faint": "#73736D",
+    "onInk": "#111111",
+    "lift": "rgba(0,0,0,.5)"
+  }
+}

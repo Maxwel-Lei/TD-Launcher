@@ -24,20 +24,10 @@
   --f-mono:"JetBrains Mono","Noto Sans SC",monospace;
   --ease:cubic-bezier(.2,.8,0,1);
 }
-/* ===== 主题「玉」：取自那枚立体玉字——黑底、青玉色的字面、蓝青色的侧面 =====
-   只换颜色令牌；卡片悬停时的投影换成蓝青色的实心侧面，呼应玉字的厚度 */
-html[data-theme="yu"]{
-  color-scheme:dark;
-  --bg0:#03090B; --bg1:#07151A; --bg2:#0C222A;
-  --line:#123A47; --line2:#136093;
-  --ink:#5FF0B4; --ink2:#3FCBA4; --mute:#2F9C92; --faint:#2B8C90;
-  --on-ink:#021210; --on-ink-mute:#0B4A40; --ink-hover:#9AF8D5; --ink-line:#1E9A7C;
-  --hover:#0F2C36; --thumb:#020607; --scroll:#12495A; --scroll-h:#1A6C86; --skel1:#0F2C36; --skel2:#0C242C;
-  --lift:#136093; --scrim:rgba(0,6,8,.62);
-}
-html[data-theme="yu"] img.logo{height:44px}
-html[data-theme="yu"] .pick{background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line2)}
-html[data-theme="yu"] .card-wrap.sel .pick{background:var(--ink);box-shadow:none}
+/* 主题的颜色不写在这里：每个主题是 themes/ 里的一个 JSON 文件，由 app.js 写成上面这些变量（见 docs/theme-spec.md）。
+   下面只放深色模式下需要单独处理的地方 */
+html[data-mode="dark"] .pick{background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line2)}
+html[data-mode="dark"] .card-wrap.sel .pick{background:var(--ink);box-shadow:none}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 body{display:flex;flex-direction:column;overflow:hidden}
@@ -202,10 +192,12 @@ main{position:relative;flex:1;min-width:0;overflow:hidden;isolation:isolate}
 .inp:focus{--lc:var(--ink)}
 textarea.inp{height:auto;padding:12px 14px;line-height:1.7;resize:vertical}
 .warn{font-size:12px;color:var(--ink2)}
-.tpls{display:flex;gap:10px}
+.tpls{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 .tpl{--k:10px;flex:1;padding:14px 16px;border:0;text-align:left;background:var(--ink);color:var(--on-ink)}
 .tpl small{display:block;margin-top:4px;font-size:12px;color:var(--on-ink-mute)}
-.tpl.off{background:var(--bg2);color:var(--mute);box-shadow:inset 0 0 0 1px var(--line);cursor:not-allowed}
+.tpl{cursor:pointer;font:inherit}
+.tpl.off{background:var(--bg2);color:var(--ink2);box-shadow:inset 0 0 0 1px var(--line)}
+.tpl.off:hover{box-shadow:inset 0 0 0 1px var(--line2)}
 .tpl.off small{color:var(--faint)}
 .tpl .label{float:right;color:var(--on-ink-mute)}
 .pathbox{display:flex;align-items:center;gap:8px;padding-left:14px}
@@ -282,7 +274,15 @@ pre.tree b{color:var(--ink);font-weight:500}
 .logo-txt small{color:var(--mute);font-size:12px;line-height:1.7}
 .logo-acts{display:flex;align-items:center;gap:6px;margin-top:2px}
 .logo-acts .btn{height:38px}
-img.logo{height:38px;width:auto;max-width:76px;object-fit:contain}
+img.logo{height:40px;width:auto;max-width:80px;object-fit:contain}
+.theme-seg{flex-wrap:wrap}
+.theme-seg button{flex:1 1 30%;height:auto;min-height:44px;padding:6px 10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.theme-seg button b{font-size:13px;font-weight:500}
+.theme-seg button small{font-size:11px;opacity:.7}
+.theme-seg button small.mine{font-family:var(--f-mono)}
+.theme-acts{display:flex;align-items:center;gap:4px;margin:-2px 0 0 -12px}
+.theme-acts .btn{height:30px;font-size:12px;color:var(--ink2)}
+.theme-err{padding:10px 12px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line2);font-size:12px;line-height:1.8;color:var(--ink2)}
 .grp{margin:0 0 34px}
 .grp-h{display:flex;align-items:baseline;gap:12px;margin:0 0 14px;padding:0 0 10px;border-bottom:1px solid var(--line2)}
 .grp-h h2{margin:0;font-size:16px;font-weight:700}
@@ -395,10 +395,8 @@ body.dropping #main::after{content:"松开鼠标，导入这个文件夹";positi
     </div>
     <div class="field">
       <div class="fl">模板</div>
-      <div class="tpls">
-        <div class="tpl cut"><span class="label">Default</span>默认模板<small>素材 / 组件 / 脚本 / 输出</small></div>
-        <div class="tpl off">演出 · 装置 · 接单<small>多套模板，以后再做</small></div>
-      </div>
+      <div class="tpls" id="npTpls"></div>
+      <div class="theme-acts"><button class="btn text" type="button" id="npTplDir">管理模板（打开模板文件夹）</button></div>
     </div>
     <div class="field">
       <div class="fl">保存位置</div>
@@ -455,6 +453,10 @@ body.dropping #main::after{content:"松开鼠标，导入这个文件夹";positi
       <div class="field"><label for="dNote">备注</label><textarea class="inp" id="dNote" rows="4" placeholder="随手记点什么"></textarea></div>
     </div>
     <div class="del-row">
+      <button class="btn text" type="button" id="dTpl">存为模板</button>
+      <small>把文件夹结构和最新的 .toe 存成模板</small>
+    </div>
+    <div class="del-row" style="border-top:0;padding-top:0;margin-top:-6px">
       <button class="btn text" type="button" id="dDel">删除工程</button>
       <small>整个文件夹移到回收站，可以恢复</small>
     </div>
@@ -512,7 +514,13 @@ body.dropping #main::after{content:"松开鼠标，导入这个文件夹";positi
     </div>
     <div class="field">
       <div class="fl">主题</div>
-      <div class="seg" id="sTheme"></div>
+      <div class="seg theme-seg" id="sTheme"></div>
+      <div class="seg" id="sMode"></div>
+      <div class="theme-acts">
+        <button class="btn text" type="button" id="sThemeDir">打开主题文件夹</button>
+        <button class="btn text" type="button" id="sThemeReload">重新读取</button>
+      </div>
+      <div class="theme-err" id="sThemeErr" hidden></div>
     </div>
     <div class="field">
       <div class="fl">标志</div>

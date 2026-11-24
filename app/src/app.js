@@ -4,6 +4,8 @@
      inspect_import  导入前看一眼选的文件夹里有哪些工程（只读）
      set_folder_icon 给工程文件夹换上 / 撤回图标
      read_image / save_custom_logo / clear_custom_logo / custom_logo  自定义标志
+     list_user_themes / open_themes_dir  自己做的主题
+     list_templates / open_templates_dir / save_as_template  自己做的工程模板
      create_project  按模板建文件夹
      save_meta       写回 project.json
      open_project    用系统默认程序（TD）打开 .toe
@@ -22,8 +24,10 @@ const dialog = window.__TAURI__.dialog;
   document.getElementById('wClose').onclick = () => w.close();
 })();
 
-const STATUSES = ['进行中', '已交付', '搁置'];
-const ICON = { '全部': 's0', '进行中': 's1', '已交付': 's2', '搁置': 's3', '未标注': 's4' };
+const STATUSES = ['进行中', '已完成', '搁置'];
+// 早期版本把「已完成」叫「已交付」：读到旧写法时当成已完成，下次保存就会写成新的
+const STATUS_ALIAS = { '已交付': '已完成' };
+const ICON = { '全部': 's0', '进行中': 's1', '已完成': 's2', '搁置': 's3', '未标注': 's4' };
 const ui = { status: '全部', tag: '', group: null, q: '', openId: null, scanning: false, error: '' };
 const topGroup = p => p.group ? p.group.split('/')[0] : '';
 let root = localStorage.getItem('root') || '';
@@ -35,12 +39,106 @@ const flag = (k, d) => { const v = localStorage.getItem(k); return v === null ? 
 const cfg = { folderIcon: flag('folderIcon', false), datePrefix: flag('datePrefix', true), autoOpen: flag('autoOpen', true), autoRescan: flag('autoRescan', true), groupByFolder: flag('groupByFolder', true) };
 function setCfg(k, v) { cfg[k] = v; try { localStorage.setItem(k, v ? '1' : '0'); } catch (e) {} }
 
-// 主题：只换颜色（和左上角的标志）。logo 是这个主题自带的标志图，没有就用默认的
-const THEMES = [{ id: '', name: '默认', sub: '黑白灰' }, { id: 'yu', name: '玉', sub: '青玉色 · 深色', logo: new URL('themes/yu.svg', document.currentScript.src).href }];
-let theme = localStorage.getItem('theme') || '';
-if (!THEMES.some(t => t.id === theme)) theme = '';
-function applyTheme() { if (theme) document.documentElement.dataset.theme = theme; else delete document.documentElement.dataset.theme; }
-applyTheme();
+/* ================= 主题 =================
+   一个主题 = 一个 JSON 文件，里面有浅色（light）和深色（dark）两套颜色，格式见 docs/theme-spec.md。
+   自带的主题在 src/themes/（index.json 里登记），自己做的放在"主题文件夹"里，由后端读出来。
+   应用主题 = 把颜色写成 CSS 变量；写不全的可选颜色按必填的 10 个算出来。 */
+const THEME_CORE = ['bg0', 'bg1', 'bg2', 'line', 'line2', 'ink', 'ink2', 'mute', 'faint', 'onInk'];
+const THEME_VARS = { bg0: '--bg0', bg1: '--bg1', bg2: '--bg2', line: '--line', line2: '--line2', ink: '--ink', ink2: '--ink2', mute: '--mute', faint: '--faint',
+  onInk: '--on-ink', onInkMute: '--on-ink-mute', inkHover: '--ink-hover', inkLine: '--ink-line', hover: '--hover', thumb: '--thumb',
+  scroll: '--scroll', scrollHover: '--scroll-h', skel1: '--skel1', skel2: '--skel2', lift: '--lift', scrim: '--scrim' };
+const THEME_BASE = new URL('themes/', document.currentScript.src).href;
+const isHex = c => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
+const isColor = c => isHex(c) || (typeof c === 'string' && /^rgba?\([\d\s.,%]{5,40}\)$/i.test(c));
+const rgbOf = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
+const mixHex = (a, b, t) => { const x = rgbOf(a), y = rgbOf(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join(''); };
+const alphaOf = (c, a) => `rgba(${rgbOf(c).join(',')},${a})`;
+// 把一套颜色补全：可选的没写，就按必填的算
+function fullTokens(m, dark) {
+  const t = Object.assign({}, m), d = (k, v) => { if (!isColor(t[k])) t[k] = v; };
+  d('onInkMute', mixHex(t.onInk, t.ink, 0.3));
+  d('inkHover', mixHex(t.ink, t.onInk, 0.14));
+  d('inkLine', mixHex(t.ink, t.onInk, 0.2));
+  d('hover', mixHex(t.bg1, t.ink, 0.05));
+  d('thumb', dark ? mixHex(t.bg0, '#000000', 0.5) : '#161616');
+  d('scroll', t.line2); d('scrollHover', t.faint);
+  d('skel1', mixHex(t.bg2, t.ink, 0.07)); d('skel2', mixHex(t.bg2, t.ink, 0.04));
+  d('lift', dark ? 'rgba(0,0,0,.5)' : alphaOf(t.ink, 0.08));
+  d('scrim', dark ? 'rgba(0,0,0,.6)' : alphaOf(t.ink, 0.32));
+  return t;
+}
+// 检查一个主题文件的内容；不合格就返回原因（中文，直接给用户看）
+function checkTheme(d) {
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return '内容不是一个主题';
+  if (d.format !== 1) return 'format 应该是 1';
+  if (typeof d.id !== 'string' || !/^[a-z0-9][a-z0-9-]{1,31}$/.test(d.id)) return 'id 要用小写字母、数字、连字符，2 到 32 个字符';
+  if (typeof d.name !== 'string' || !d.name.trim()) return '缺少 name';
+  for (const mode of ['light', 'dark']) {
+    if (!d[mode] || typeof d[mode] !== 'object') return '缺少 ' + mode;
+    for (const k of THEME_CORE) {
+      if (d[mode][k] === undefined) return `缺少 ${mode}.${k}`;
+      if (!isHex(d[mode][k])) return `${mode}.${k} 颜色写法不对，要写成 #RRGGBB`;
+    }
+    for (const k of Object.keys(THEME_VARS)) if (d[mode][k] !== undefined && !isColor(d[mode][k])) return `${mode}.${k} 颜色写法不对`;
+  }
+  const lg = d.logo, names = lg === undefined ? [] : typeof lg === 'string' ? [lg] : lg && typeof lg === 'object' ? [lg.light, lg.dark] : [null];
+  if (names.some(n => typeof n !== 'string' || !/^[^\\/:*?"<>|]+\.(svg|png)$/i.test(n))) return 'logo 只写同一个文件夹里的文件名（.svg 或 .png）';
+  return '';
+}
+const DEFAULT_THEME = { id: 'default', name: '默认', description: '黑白灰', builtin: true, logo: null,
+  light: { bg0: '#E9E9E5', bg1: '#F4F4F1', bg2: '#FFFFFF', line: '#D9D9D3', line2: '#C9C9C3', ink: '#111111', ink2: '#45453F', mute: '#6B6B65', faint: '#8E8E88', onInk: '#FFFFFF' },
+  dark: { bg0: '#0E0E0D', bg1: '#171716', bg2: '#20201E', line: '#2C2C29', line2: '#3D3D39', ink: '#F2F2EE', ink2: '#C4C4BD', mute: '#96968F', faint: '#73736D', onInk: '#111111' } };
+let themes = [DEFAULT_THEME], themeErrors = [];
+let theme = localStorage.getItem('theme') || 'default';
+// 外观：light 浅色 / dark 深色 / auto 跟随系统。上一版只有"玉"这个深色主题，没存过外观的沿用它
+let themeMode = localStorage.getItem('themeMode') || (theme === 'yu' ? 'dark' : 'light');
+const sysDark = matchMedia('(prefers-color-scheme: dark)');
+const isDark = () => themeMode === 'dark' || (themeMode === 'auto' && sysDark.matches);
+const curTheme = () => themes.find(t => t.id === theme) || themes[0];
+function setVars(vars, dark) {
+  const st = document.documentElement.style;
+  for (const k in vars) st.setProperty(k, vars[k]);
+  st.colorScheme = dark ? 'dark' : 'light';
+  document.documentElement.dataset.mode = dark ? 'dark' : 'light';
+}
+function applyTheme() {
+  const th = curTheme(), dark = isDark(), tk = fullTokens(dark ? th.dark : th.light, dark), vars = {};
+  for (const k in THEME_VARS) vars[THEME_VARS[k]] = tk[k];
+  setVars(vars, dark);
+  document.documentElement.dataset.theme = th.id;
+  // 记下这次的颜色，下次启动先用它，免得主题文件读出来之前闪一下默认配色
+  try { localStorage.setItem('themeCache', JSON.stringify({ vars, dark })); } catch (e) {}
+}
+try { const c = JSON.parse(localStorage.getItem('themeCache') || 'null'); if (c && c.vars) setVars(c.vars, !!c.dark); } catch (e) {}
+sysDark.addEventListener('change', () => { if (themeMode === 'auto') { applyTheme(); showLogo(customLogo); } });
+function themeLogo(th) {
+  if (!th.logo) return '';
+  return typeof th.logo === 'string' ? th.logo : (isDark() ? th.logo.dark : th.logo.light) || '';
+}
+// 读主题：自带的从 themes/index.json，自己做的从后端
+async function loadThemes() {
+  const list = [], errs = [], seen = new Set();
+  const add = (d, file, urlOf, builtin) => {
+    const why = checkTheme(d) || (seen.has(d.id) ? 'id 和已有主题重复' : '');
+    if (why) { errs.push(`${file}：${why}`); return; }
+    seen.add(d.id);
+    const lg = d.logo === undefined ? null : typeof d.logo === 'string' ? urlOf(d.logo) : { light: urlOf(d.logo.light), dark: urlOf(d.logo.dark) };
+    list.push({ id: d.id, name: d.name.trim().slice(0, 16), description: String(d.description || '').slice(0, 24), light: d.light, dark: d.dark, logo: lg, builtin });
+  };
+  try {
+    const files = await (await fetch(THEME_BASE + 'index.json')).json();
+    for (const f of files) { try { add(await (await fetch(THEME_BASE + f)).json(), f, n => THEME_BASE + n, true); } catch (e) { errs.push(`${f}：读不出来`); } }
+  } catch (e) { errs.push('自带主题读不出来'); }
+  try {
+    for (const u of await invoke('list_user_themes') || []) {
+      if (u.error) { errs.push(`${u.file}：${u.error}`); continue; }
+      add(u.data, u.file, n => convertFileSrc(u.dir + '/' + n), false);
+    }
+  } catch (e) {}
+  themes = list.length ? list : [DEFAULT_THEME]; themeErrors = errs;
+  applyTheme(); showLogo(customLogo);
+  if ($('#set').classList.contains('on')) renderThemes();
+}
 
 // 导入的工程：不在根目录里，只登记它们的位置，文件留在原处（企划 §3）
 let imports = [];
@@ -75,7 +173,7 @@ function normalize(raw) {
     mainToe: m.mainToe || '',
     name: m.name || raw.name,
     tags: Array.isArray(m.tags) ? m.tags : [],
-    status: STATUSES.includes(m.status) ? m.status : '未标注',
+    status: STATUSES.includes(STATUS_ALIAS[m.status] || m.status) ? (STATUS_ALIAS[m.status] || m.status) : '未标注',
     client: m.client || '',
     note: m.note || '',
     created: m.created || fromFolder || (raw.earliest ? fmtTime(raw.earliest).slice(0, 10) : '') || (raw.modified ? fmtTime(raw.modified).slice(0, 10) : '')
@@ -244,8 +342,30 @@ function folderName() {
   const base = $('#npName').value.trim().replace(/[. ]+$/, '');
   return { base, folder: ($('#npDate').checked ? today() + '_' : '') + base };
 }
+// 工程模板：'' 是自带的默认模板，其它是"模板文件夹"里自己做的
+let templates = [], tplSel = localStorage.getItem('template') || '';
+function renderTpls() {
+  if (tplSel && !templates.some(t => t.name === tplSel)) tplSel = '';
+  const tile = (id, name, sub, tag) => `<button type="button" class="tpl ${id === tplSel ? 'cut' : 'off'}" data-tpl="${esc(id)}" aria-pressed="${id === tplSel}">${tag ? `<span class="label">${tag}</span>` : ''}${esc(name)}<small>${esc(sub)}</small></button>`;
+  $('#npTpls').innerHTML = tile('', '默认模板', '素材 / 组件 / 脚本 / 输出', 'Default') +
+    templates.map(t => tile(t.name, t.name, (t.entries.filter(e => e.endsWith('/')).map(e => e.slice(0, -1)).slice(0, 4).join(' / ') || '没有子文件夹') + (t.hasToe ? '' : ' · 用自带的 .toe'), '')).join('');
+}
+async function loadTemplates() {
+  try { templates = await invoke('list_templates') || []; } catch (e) { templates = []; }
+  renderTpls(); updateTree();
+}
+function setTpl(id) { tplSel = id; try { localStorage.setItem('template', id); } catch (e) {} renderTpls(); updateTree(); }
 function updateTree() {
   const { base, folder } = folderName(), b = base || '未命名', f = folder || b;
+  const tp = templates.find(t => t.name === tplSel);
+  if (tp) {
+    const rest = tp.entries.slice(0, 14), more = tp.entries.length - rest.length;
+    const lines = [`├─ ${esc(b)}.toe`, '├─ project.json   ← 标签、状态、备注', '├─ thumb.jpg      ← 保存时自动生成', ...rest.map(e => '├─ ' + esc(e))];
+    if (more > 0) lines.push(`├─ … 还有 ${more} 项`);
+    lines[lines.length - 1] = lines[lines.length - 1].replace('├─', '└─');
+    $('#npTree').innerHTML = [`<b>${esc(f || b)}/</b>`, ...lines].join('\n');
+    return;
+  }
   $('#npTree').innerHTML = [`<b>${esc(f || b)}/</b>`, `├─ ${esc(b)}.toe`, '├─ project.json   ← 标签、状态、备注', '├─ thumb.jpg      ← 保存时自动生成',
     '├─ assets/', '│  ├─ images/', '│  ├─ videos/', '│  ├─ audio/', '│  ├─ models/', '│  └─ fonts/', '├─ tox/', '├─ scripts/', '└─ export/'].join('\n');
 }
@@ -262,7 +382,7 @@ $('#npCreate').addEventListener('click', async () => {
   if (!base) { toast('先给工程起个名字'); $('#npName').focus(); return; }
   const btn = $('#npCreate'); btn.disabled = true;
   try {
-    const res = await invoke('create_project', { root, folder, name: base, created: today() });
+    const res = await invoke('create_project', { root, folder, name: base, created: today(), template: tplSel || null });
     closeAll();
     await scan({ quiet: true });
     if (res.toe && !cfg.autoOpen) {
@@ -282,7 +402,7 @@ function openNew() {
   closeAll(); $('#npWarn').hidden = true; $('#npName').value = '';
   $('#npDate').checked = cfg.datePrefix;
   $('#npCreate').textContent = cfg.autoOpen ? '创建并用 TD 打开' : '创建';
-  updateTree(); syncRoot();
+  renderTpls(); updateTree(); syncRoot(); loadTemplates();
   $('#scrim').classList.add('on'); $('#modal').classList.add('on');
   setTimeout(() => $('#npName').focus(), 60);
 }
@@ -358,6 +478,21 @@ $('#cYes').addEventListener('click', async () => {
   const f = cfmYes; if (!f) return closeConfirm();
   $('#cYes').disabled = true;
   try { await f(); } finally { $('#cYes').disabled = false; closeConfirm(); }
+});
+
+// 把这个工程存成模板：只存文件夹结构和最新的 .toe
+$('#dTpl').addEventListener('click', () => {
+  const p = cur(); if (!p) return;
+  confirmBox({
+    label: 'Template', title: '存为模板', yes: '保存',
+    html: `把「<b>${esc(p.name)}</b>」的文件夹结构和最新的 .toe 存成模板，以后新建工程时可以选。素材、导出的文件不会带上。<br><input class="inp" id="tplName" type="text" value="${esc(p.name)}" aria-label="模板名" style="margin-top:12px;width:100%">`,
+    onYes: async () => {
+      const name = ($('#tplName').value || '').trim();
+      if (!name) { toast('先给模板起个名字'); return; }
+      try { await invoke('save_as_template', { path: p.path, name }); toast(`已存为模板「${name}」，新建工程时可以选`); }
+      catch (e) { toast('没存成：' + e); }
+    }
+  });
 });
 
 // 导入的工程：只取消登记，不动文件；换过的文件夹图标一起撤回
@@ -536,7 +671,7 @@ function askBatchMove(dest) {
 
 /* ================= 老工程补标注（企划 §6.2） ================= */
 const groupTag = p => { const g = topGroup(p); return g ? (g.replace(/^\d+[\s_.\-]*/, '') || g) : ''; };
-let annStatus = '已交付';
+let annStatus = '已完成';
 function openAnn() {
   const list = projects.filter(p => !p.hasMeta);
   if (!list.length) { toast('所有工程都已经有标注了'); return; }
@@ -737,7 +872,7 @@ function showLogo(info) {
   customLogo = info;
   const svg = document.querySelector('header svg.logo'); let img = document.querySelector('header img.logo');
   // 优先级：自己选的标志 > 主题自带的标志 > 默认标志
-  const th = THEMES.find(t => t.id === theme), src = info ? info.src : th && th.logo ? th.logo : '';
+  const src = info ? info.src : themeLogo(curTheme());
   if (src) {
     if (!img) { img = document.createElement('img'); img.className = 'logo'; img.alt = ''; svg.after(img); }
     img.src = src; svg.style.display = 'none';
@@ -797,13 +932,27 @@ function renderSetInfo() {
     ? `登记了 ${imports.length} 个根目录以外的工程${ui.missingN ? `，其中 ${ui.missingN} 个现在读不到 · <button type="button" data-unmissing>不再登记读不到的</button>` : ''}。它们的文件留在原处，侧栏"文件夹"里的"外部导入"可以单独看这 ${n} 个。`
     : '还没有导入过根目录以外的工程。点右上角"导入"，或者把工程文件夹拖进窗口。';
 }
+const MODES = [['light', '浅色'], ['dark', '深色'], ['auto', '跟随系统']];
 function renderThemes() {
-  $('#sTheme').innerHTML = THEMES.map(t => `<button type="button" data-theme-id="${t.id}" aria-pressed="${t.id === theme}">${t.name}<small style="margin-left:8px;opacity:.7;font-weight:400">${t.sub}</small></button>`).join('');
+  const cur = curTheme().id;
+  $('#sTheme').innerHTML = themes.map(t => `<button type="button" data-theme-id="${esc(t.id)}" aria-pressed="${t.id === cur}"><b>${esc(t.name)}</b>${t.description ? `<small>${esc(t.description)}</small>` : ''}${t.builtin ? '' : '<small class="mine">自制</small>'}</button>`).join('');
+  $('#sMode').innerHTML = MODES.map(([id, name]) => `<button type="button" data-theme-mode="${id}" aria-pressed="${id === themeMode}">${name}</button>`).join('');
+  $('#sThemeErr').hidden = !themeErrors.length;
+  $('#sThemeErr').innerHTML = themeErrors.length ? '这些主题文件没读成功：<br>' + themeErrors.map(esc).join('<br>') : '';
 }
 function setTheme(id) {
   theme = id; try { localStorage.setItem('theme', id); } catch (e) {}
   applyTheme(); showLogo(customLogo); renderThemes();
 }
+function setThemeMode(m) {
+  themeMode = m; try { localStorage.setItem('themeMode', m); } catch (e) {}
+  applyTheme(); showLogo(customLogo); renderThemes();
+}
+async function openThemesDir() {
+  try { await invoke('open_themes_dir'); toast('主题文件夹已打开：里面有《主题制作规范》和一个模板，做好后放进去，再点"重新读取"'); }
+  catch (e) { toast('打不开主题文件夹：' + e); }
+}
+async function reloadThemes() { await loadThemes(); renderThemes(); toast(`读到 ${themes.length} 个主题` + (themeErrors.length ? `，${themeErrors.length} 个文件没读成功` : '')); }
 function openSet() {
   closeAll(); syncRoot(); renderThemes();
   $('#sIcon').checked = cfg.folderIcon && IS_WIN; $('#sIcon').disabled = !IS_WIN;
@@ -846,6 +995,11 @@ document.addEventListener('click', e => {
   if (t.id === 'openImport' || t.dataset.import !== undefined) { pickImport(); return; }
   if (t.id === 'openSet') { openSet(); return; }
   if (t.dataset.themeId !== undefined) { setTheme(t.dataset.themeId); return; }
+  if (t.dataset.themeMode) { setThemeMode(t.dataset.themeMode); return; }
+  if (t.id === 'sThemeDir') { openThemesDir(); return; }
+  if (t.dataset.tpl !== undefined) { setTpl(t.dataset.tpl); return; }
+  if (t.id === 'npTplDir') { invoke('open_templates_dir').then(() => toast('模板文件夹已打开：每个文件夹就是一个模板，里面有说明')).catch(e => toast('打不开模板文件夹：' + e)); return; }
+  if (t.id === 'sThemeReload') { reloadThemes(); return; }
   if (t.id === 'sLogoPick') { pickLogo(); return; }
   if (t.id === 'sLogoReset') { resetLogo(); return; }
   if (t.dataset.amain) { setMainToe(t.dataset.amain); return; }
@@ -879,5 +1033,6 @@ window.addEventListener('focus', () => { if (root && cfg.autoRescan) scan({ quie
 
 syncRoot();
 loadLogo();
+loadThemes();
 render();
 scan();

@@ -9,7 +9,7 @@
   });
   let list = [
     mk('2026-11-12_粒子雨', '粒子雨', { name: '粒子雨', tags: ['粒子', 'GPU'], status: '进行中', note: '200 万粒子掉帧', client: '', created: '2026-11-12' }),
-    mk('2026-10-28_音频可视化', '音频可视化', { name: '音频可视化', tags: ['音频可视化', '演出'], status: '已交付', client: 'Livehouse', created: '2026-10-28' }),
+    mk('2026-10-28_音频可视化', '音频可视化', { name: '音频可视化', tags: ['音频可视化', '演出'], status: '已完成', client: 'Livehouse', created: '2026-10-28' }),
     mk('GLSL练习', 'glsl', { name: 'GLSL 噪声练习', tags: ['GLSL'], status: '搁置' }),
     mk('老工程_没有标注', 'old_project', null),
     mk('客户A_海报', 'poster', null, true, '01_商单/客户A'),
@@ -19,6 +19,7 @@
   // 根目录以外的工程，给"导入"用：选 E:/旧硬盘 是批量，选其中一个是单个
   const ext = (folder, name, meta) => Object.assign(mk(folder, name, meta, true, '外部导入'), { path: 'E:/旧硬盘/' + folder, toe: `E:/旧硬盘/${folder}/${name}.toe`, external: true });
   const outside = [ext('毕设_云南文物', 'relic', null), ext('2025_音乐节VJ', 'vj', { name: '音乐节 VJ', tags: ['演出'], status: '已交付', created: '2025-08-02' }), ext('测试用', 'test', null)];
+  const tpls = [{ name: '演出', hasToe: true, entries: ['灯光/', '素材/', '音频/', '清单.md'] }, { name: '接单', hasToe: false, entries: ['01_需求/', '02_素材/', '03_工程/', '04_交付/', '报价单.md'] }];
   const calls = (window.__mockCalls = []);
   window.__TAURI__ = {
     core: {
@@ -35,6 +36,11 @@
         if (cmd === 'save_custom_logo') { window.__saved = args; window.__logoUrl = URL.createObjectURL(new Blob([new Uint8Array(args.logo)], { type: 'image/png' })); return 'blob'; }
         if (cmd === 'clear_custom_logo') { window.__logoUrl = null; return null; }
         if (cmd === 'custom_logo') return window.__logoUrl ? [window.__logoUrl, 1] : null;
+        if (cmd === 'list_templates') return tpls;
+        if (cmd === 'open_templates_dir') return 'C:/Users/me/AppData/Roaming/com.tdxuezhang.launcher/templates';
+        if (cmd === 'save_as_template') { if (tpls.some(t => t.name === args.name)) throw `已经有叫「${args.name}」的模板了`; tpls.push({ name: args.name, hasToe: true, entries: ['assets/', 'export/'] }); return null; }
+        if (cmd === 'list_user_themes') return window.__userThemes || [];
+        if (cmd === 'open_themes_dir') return 'C:/Users/me/AppData/Roaming/com.tdxuezhang.launcher/themes';
         if (cmd === 'set_folder_icon') { const p = list.concat(outside).find(x => x.path === args.path); if (p.folder === 'GLSL练习' && args.on) throw '这个文件夹已经有自己的图标设置（desktop.ini），没有改动'; p.folderIcon = args.on; return null; }
         if (cmd === 'create_project') { const p = mk(args.folder, args.name, { name: args.name, tags: [], status: '进行中', created: args.created }, false); list.unshift(p); return { path: p.path, toe: null }; }
         if (cmd === 'delete_project') { list = list.filter(x => x.path !== args.path); return null; }

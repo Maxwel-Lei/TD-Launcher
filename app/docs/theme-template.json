@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "id": "my-theme",
+  "name": "我的主题",
+  "description": "一句话说明",
+  "light": {
+    "bg0": "#E9E9E5",
+    "bg1": "#F4F4F1",
+    "bg2": "#FFFFFF",
+    "line": "#D9D9D3",
+    "line2": "#C9C9C3",
+    "ink": "#111111",
+    "ink2": "#45453F",
+    "mute": "#6B6B65",
+    "faint": "#8E8E88",
+    "onInk": "#FFFFFF"
+  },
+  "dark": {
+    "bg0": "#0E0E0D",
+    "bg1": "#171716",
+    "bg2": "#20201E",
+    "line": "#2C2C29",
+    "line2": "#3D3D39",
+    "ink": "#F2F2EE",
+    "ink2": "#C4C4BD",
+    "mute": "#96968F",
+    "faint": "#73736D",
+    "onInk": "#111111"
+  }
+}

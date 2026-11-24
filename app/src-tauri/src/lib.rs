@@ -423,12 +423,204 @@ fn template_toe(app: &AppHandle) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-#[tauri::command]
-fn create_project(app: AppHandle, root: String, folder: String, name: String, created: String) -> Result<Created, String> {
-    create_project_at(root, folder, name, created, template_toe(&app))
+/* ---------------- 自己做的工程模板 ---------------- */
+
+/// 自己做的模板放在软件的数据目录里：templates/模板名/ 就是一个真实的文件夹，新建工程时整个复制过去
+fn templates_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("templates"))
 }
 
-fn create_project_at(root: String, folder: String, name: String, created: String, tpl: Option<PathBuf>) -> Result<Created, String> {
+const TEMPLATES_README: &str = "这里的每个文件夹就是一个工程模板，文件夹名就是模板名。\r\n\r\n新建工程时选它，软件会把整个文件夹（里面的子文件夹和文件）复制成新工程：\r\n- 文件夹里的 .toe 会改名成「工程名.toe」；有好几个 .toe 时改最近保存的那个。\r\n- 没有 .toe 的话，用软件自带的那份（里面有保存时自动存缩略图的脚本）。\r\n- project.json、thumb.jpg、Backup 文件夹不会复制，新工程会有自己的。\r\n\r\n做模板的两种办法：\r\n1. 在启动器里打开一个工程的详情，点「存为模板」：会存下它的文件夹结构和最新的 .toe。\r\n2. 直接在这里新建一个文件夹，把想要的子文件夹和文件放进去。\r\n\r\n改名、删除模板：直接在这里改文件夹名、删文件夹。\r\n";
+
+/// 模板名 / 模板里的文件夹名：不能有系统不允许的字符，也不能是 . 或 ..
+fn safe_name(name: &str) -> Result<String, String> {
+    let n = name.trim().trim_end_matches(['.', ' ']).to_string();
+    if n.is_empty() || n == "." || n == ".." || n.contains(BAD_CHARS) || n.starts_with('_') || n.starts_with('.') {
+        return Err("名字不能为空，不能以 _ 或 . 开头，也不能有 : ? * / \\ 这些字符".into());
+    }
+    Ok(n)
+}
+
+/// 复制模板 / 存模板时都不带走的东西
+fn template_skip(name: &str, is_dir: bool) -> bool {
+    let l = name.to_lowercase();
+    system_junk(name).is_some()
+        || l == "desktop.ini"
+        || l == ICON_FILE
+        || if is_dir { l == "backup" || l == "node_modules" } else { l == "project.json" || l == "thumb.jpg" || l.starts_with("crashautosave") }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Template {
+    name: String,
+    has_toe: bool,
+    /// 第一层的内容，文件夹以 / 结尾，给"将会创建"的预览用
+    entries: Vec<String>,
+}
+
+fn read_templates(dir: &Path) -> Vec<Template> {
+    let Ok(rd) = fs::read_dir(dir) else { return vec![] };
+    let mut out: Vec<Template> = rd
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if safe_name(&name).ok()? != name {
+                return None;
+            }
+            let p = e.path();
+            let mut entries: Vec<String> = fs::read_dir(&p)
+                .map(|rd| {
+                    rd.flatten()
+                        .filter_map(|c| {
+                            let n = c.file_name().to_string_lossy().to_string();
+                            let d = c.path().is_dir();
+                            (!template_skip(&n, d) && !n.to_lowercase().ends_with(".toe")).then(|| if d { format!("{}/", n) } else { n })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            // 文件夹排前面，各自按名字
+            entries.sort_by(|a, b| b.ends_with('/').cmp(&a.ends_with('/')).then(a.to_lowercase().cmp(&b.to_lowercase())));
+            Some(Template { has_toe: !toes_in(&p).is_empty(), name, entries })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+#[tauri::command]
+fn list_templates(app: AppHandle) -> Vec<Template> {
+    templates_dir(&app).map(|d| read_templates(&d)).unwrap_or_default()
+}
+
+fn prepare_templates_dir(dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("_说明.txt"), TEMPLATES_README).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_templates_dir(app: AppHandle) -> Result<String, String> {
+    let dir = templates_dir(&app).ok_or("找不到软件的数据目录")?;
+    prepare_templates_dir(&dir)?;
+    let s = dir.to_string_lossy().to_string();
+    app.opener().open_path(s.clone(), None::<&str>).map_err(|e| e.to_string())?;
+    Ok(s)
+}
+
+/// 一次最多复制这么多个文件，防止不小心把一个巨大的文件夹当成模板
+const TEMPLATE_MAX_FILES: usize = 5000;
+
+fn copy_tree(src: &Path, dst: &Path, depth: usize, count: &mut usize) -> Result<(), String> {
+    let rd = fs::read_dir(src).map_err(|e| e.to_string())?;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let ft = e.file_type().map_err(|e| e.to_string())?;
+        if ft.is_symlink() || template_skip(&name, ft.is_dir()) {
+            continue;
+        }
+        let to = dst.join(&name);
+        if ft.is_dir() {
+            if depth >= 12 {
+                continue;
+            }
+            fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+            copy_tree(&e.path(), &to, depth + 1, count)?;
+        } else {
+            // 第一层的 .toe 由调用方处理（要改名）
+            if depth == 0 && name.to_lowercase().ends_with(".toe") {
+                continue;
+            }
+            *count += 1;
+            if *count > TEMPLATE_MAX_FILES {
+                return Err(format!("这个模板里的文件太多了（超过 {} 个）", TEMPLATE_MAX_FILES));
+            }
+            fs::copy(e.path(), &to).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// 把模板文件夹复制成新工程；模板里有 .toe 就把最近保存的那个改名成「工程名.toe」，返回它的位置
+fn copy_template(tpl: &Path, dir: &Path, name: &str) -> Result<Option<PathBuf>, String> {
+    let mut count = 0;
+    copy_tree(tpl, dir, 0, &mut count)?;
+    let toes = toes_in(tpl);
+    let Some(main) = main_toe(&toes, None) else { return Ok(None) };
+    let main_base = toes.iter().find(|t| t.path == main).map(|t| t.base.clone()).unwrap_or_default();
+    // 别的名字的 .toe 原样带上（各取最新的一份），主文件改名
+    let mut bases: Vec<&str> = toes.iter().map(|t| t.base.as_str()).filter(|b| *b != main_base).collect();
+    bases.sort();
+    bases.dedup();
+    for b in bases {
+        if let Some(p) = main_toe(&toes, Some(b)) {
+            fs::copy(&p, dir.join(format!("{}.toe", b))).map_err(|e| e.to_string())?;
+        }
+    }
+    let dst = dir.join(format!("{}.toe", name));
+    fs::copy(&main, &dst).map_err(|e| e.to_string())?;
+    Ok(Some(dst))
+}
+
+/// 把一个工程存成模板：只存文件夹结构（空文件夹）和最新的主 .toe，素材和导出的文件不带
+fn save_template_at(templates: &Path, project: &Path, name: &str) -> Result<(), String> {
+    let name = safe_name(name)?;
+    let dst = templates.join(&name);
+    if dst.exists() {
+        return Err(format!("已经有叫「{}」的模板了", name));
+    }
+    fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
+    fn dirs_only(src: &Path, dst: &Path, depth: usize) {
+        if depth >= 6 {
+            return;
+        }
+        let Ok(rd) = fs::read_dir(src) else { return };
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if !is_dir || skip_dir(&n, false) || template_skip(&n, true) {
+                continue;
+            }
+            let to = dst.join(&n);
+            if fs::create_dir_all(&to).is_ok() {
+                dirs_only(&e.path(), &to, depth + 1);
+            }
+        }
+    }
+    dirs_only(project, &dst, 0);
+    let prefer = read_meta(project).and_then(|m| m.get("mainToe").and_then(|v| v.as_str()).map(String::from));
+    if let Some(toe) = main_toe(&toes_in(project), prefer.as_deref()) {
+        fs::copy(&toe, dst.join("template.toe")).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_as_template(app: AppHandle, path: String, name: String) -> Result<(), String> {
+    let project = check_project(Path::new(&path))?;
+    let dir = templates_dir(&app).ok_or("找不到软件的数据目录")?;
+    prepare_templates_dir(&dir)?;
+    save_template_at(&dir, &project, &name)
+}
+
+#[tauri::command]
+fn create_project(app: AppHandle, root: String, folder: String, name: String, created: String, template: Option<String>) -> Result<Created, String> {
+    // 选了自己做的模板：必须是模板文件夹里的一个文件夹
+    let tpl_dir = match template.filter(|t| !t.is_empty()) {
+        Some(t) => {
+            let d = templates_dir(&app).ok_or("找不到软件的数据目录")?.join(safe_name(&t)?);
+            if !d.is_dir() {
+                return Err(format!("找不到模板「{}」", t));
+            }
+            Some(d)
+        }
+        None => None,
+    };
+    create_project_at(root, folder, name, created, template_toe(&app), tpl_dir)
+}
+
+fn create_project_at(root: String, folder: String, name: String, created: String, tpl: Option<PathBuf>, tpl_dir: Option<PathBuf>) -> Result<Created, String> {
     let folder = folder.trim().trim_end_matches(['.', ' ']).to_string();
     let name = name.trim().to_string();
     if folder.is_empty() || name.is_empty() {
@@ -445,8 +637,21 @@ fn create_project_at(root: String, folder: String, name: String, created: String
     if dir.exists() {
         return Err(format!("已经有同名文件夹：{}", folder));
     }
-    for sub in SUBDIRS {
-        fs::create_dir_all(dir.join(sub)).map_err(|e| e.to_string())?;
+    let mut toe = None;
+    if let Some(td) = &tpl_dir {
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // 复制到一半出错就把半成品删掉，不留一个残缺的工程
+        match copy_template(td, &dir, &name) {
+            Ok(t) => toe = t.map(|p| p.to_string_lossy().to_string()),
+            Err(e) => {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        }
+    } else {
+        for sub in SUBDIRS {
+            fs::create_dir_all(dir.join(sub)).map_err(|e| e.to_string())?;
+        }
     }
     let meta = json!({
         "name": name,
@@ -457,8 +662,8 @@ fn create_project_at(root: String, folder: String, name: String, created: String
         "created": created,
     });
     fs::write(dir.join("project.json"), serde_json::to_string_pretty(&meta).unwrap()).map_err(|e| e.to_string())?;
-    let mut toe = None;
-    if let Some(tpl) = tpl {
+    // 模板里没有 .toe（或用的是默认模板）：用软件自带的那份
+    if let (None, Some(tpl)) = (&toe, tpl) {
         let dst = dir.join(format!("{}.toe", name));
         fs::copy(&tpl, &dst).map_err(|e| e.to_string())?;
         toe = Some(dst.to_string_lossy().to_string());
@@ -584,6 +789,86 @@ fn has_folder_icon(dir: &Path) -> bool {
 
 fn ini_is_ours(dir: &Path) -> bool {
     fs::read(dir.join("desktop.ini")).map(|b| String::from_utf8_lossy(&b).contains(ICON_FILE)).unwrap_or(false)
+}
+
+/* ---------------- 主题 ---------------- */
+
+/// 主题制作规范和模板：编译时带进软件里，第一次打开主题文件夹时放进去
+const THEME_SPEC: &str = include_str!("../../docs/theme-spec.md");
+const THEME_TEMPLATE: &str = include_str!("../../docs/theme-template.json");
+const THEME_MAX: u64 = 64 * 1024;
+
+/// 自己做的主题放在软件的数据目录里（不在安装目录，重装、升级都不会丢）
+fn themes_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("themes"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserTheme {
+    file: String,
+    /// 主题文件所在的文件夹，界面用它找主题自带的标志图片
+    dir: String,
+    data: Value,
+    /// 读不出来的原因；内容对不对由界面检查
+    error: Option<String>,
+}
+
+/// 读主题文件夹里的 .json（`_` 开头的是模板，跳过）。只负责读和解析，颜色对不对由界面检查
+fn read_user_themes(dir: &Path) -> Vec<UserTheme> {
+    let Ok(rd) = fs::read_dir(dir) else { return vec![] };
+    let mut files: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let n = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            p.is_file() && n.ends_with(".json") && !n.starts_with('_') && !n.starts_with('.')
+        })
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|p| {
+            let file = folder_name(&p);
+            let parsed: Result<Value, String> = if fs::metadata(&p).map(|m| m.len()).unwrap_or(0) > THEME_MAX {
+                Err("文件太大（超过 64 KB）".into())
+            } else {
+                fs::read_to_string(&p)
+                    .map_err(|_| "读不出来，要用 UTF-8 保存".to_string())
+                    .and_then(|s| serde_json::from_str::<Value>(s.trim_start_matches('\u{feff}')).map_err(|e| format!("不是合法的 JSON（第 {} 行）", e.line())))
+            };
+            let (data, error) = match parsed {
+                Ok(v) => (v, None),
+                Err(e) => (Value::Null, Some(e)),
+            };
+            UserTheme { file, dir: dir.to_string_lossy().to_string(), data, error }
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn list_user_themes(app: AppHandle) -> Vec<UserTheme> {
+    themes_dir(&app).map(|d| read_user_themes(&d)).unwrap_or_default()
+}
+
+/// 建好主题文件夹：规范每次都换成最新的，模板只在没有时才放（不覆盖用户改过的）
+fn prepare_themes_dir(dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("主题制作规范.md"), THEME_SPEC).map_err(|e| e.to_string())?;
+    let tpl = dir.join("_template.json");
+    if !tpl.exists() {
+        fs::write(&tpl, THEME_TEMPLATE).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_themes_dir(app: AppHandle) -> Result<String, String> {
+    let dir = themes_dir(&app).ok_or("找不到软件的数据目录")?;
+    prepare_themes_dir(&dir)?;
+    let s = dir.to_string_lossy().to_string();
+    app.opener().open_path(s.clone(), None::<&str>).map_err(|e| e.to_string())?;
+    Ok(s)
 }
 
 /* ---------------- 自定义标志 ---------------- */
@@ -792,7 +1077,7 @@ mod tests {
         fs::write(&tpl, b"fake toe").unwrap();
         let r = root.to_string_lossy().to_string();
 
-        let c = create_project_at(r.clone(), "2026-11-17_粒子雨".into(), "粒子雨".into(), "2026-11-17".into(), Some(tpl.clone())).unwrap();
+        let c = create_project_at(r.clone(), "2026-11-17_粒子雨".into(), "粒子雨".into(), "2026-11-17".into(), Some(tpl.clone()), None).unwrap();
         let dir = PathBuf::from(&c.path);
         for sub in SUBDIRS {
             assert!(dir.join(sub).is_dir(), "缺少 {}", sub);
@@ -801,9 +1086,9 @@ mod tests {
         assert_eq!(c.toe.is_some(), true);
 
         // 同名再建一次应当报错
-        assert!(create_project_at(r.clone(), "2026-11-17_粒子雨".into(), "粒子雨".into(), "x".into(), None).is_err());
+        assert!(create_project_at(r.clone(), "2026-11-17_粒子雨".into(), "粒子雨".into(), "x".into(), None, None).is_err());
         // 非法字符
-        assert!(create_project_at(r.clone(), "a:b".into(), "a:b".into(), "x".into(), None).is_err());
+        assert!(create_project_at(r.clone(), "a:b".into(), "a:b".into(), "x".into(), None, None).is_err());
 
         // 旧工程：只有 .toe（带版本号）和 thumb.jpg，没有 project.json
         let old = root.join("旧工程");
@@ -1062,6 +1347,92 @@ mod tests {
     }
 
     #[test]
+    fn custom_templates() {
+        let base = tmp("tpl");
+        let (root, tdir) = (base.join("root"), base.join("templates"));
+        fs::create_dir_all(&root).unwrap();
+        prepare_templates_dir(&tdir).unwrap();
+        assert!(read_templates(&tdir).is_empty(), "说明文件不是模板");
+        let builtin = base.join("builtin.toe");
+        fs::write(&builtin, b"builtin").unwrap();
+
+        // 手工做的模板：有子文件夹、文件、两个版本的 .toe，还有不该带走的东西
+        let t = tdir.join("演出");
+        for d in ["素材/视频", "灯光", "Backup"] {
+            fs::create_dir_all(t.join(d)).unwrap();
+        }
+        fs::write(t.join("素材/视频/开场.txt"), b"v").unwrap();
+        fs::write(t.join("清单.md"), b"m").unwrap();
+        fs::write(t.join("show.toe"), b"old").unwrap();
+        fs::write(t.join("show.2.toe"), b"new").unwrap();
+        fs::write(t.join("project.json"), b"{}").unwrap();
+        fs::write(t.join("thumb.jpg"), b"x").unwrap();
+        fs::write(t.join("Backup/show.1.toe"), b"x").unwrap();
+        // 让 show.2.toe 是最近保存的
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(t.join("show.2.toe"), b"new").unwrap();
+        fs::create_dir_all(tdir.join("空模板/a/b")).unwrap();
+
+        let list = read_templates(&tdir);
+        assert_eq!(list.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), vec!["演出", "空模板"]);
+        assert!(list[0].has_toe && !list[1].has_toe);
+        assert_eq!(list[0].entries, vec!["灯光/", "素材/", "清单.md"]);
+
+        let r = root.to_string_lossy().to_string();
+        let c = create_project_at(r.clone(), "2026_跨年".into(), "跨年".into(), "2026-12-31".into(), Some(builtin.clone()), Some(t.clone())).unwrap();
+        let p = PathBuf::from(&c.path);
+        assert_eq!(fs::read(p.join("跨年.toe")).unwrap(), b"new", "用最近保存的 .toe 并改名");
+        assert!(p.join("素材/视频/开场.txt").is_file() && p.join("灯光").is_dir() && p.join("清单.md").is_file());
+        assert!(!p.join("show.toe").exists() && !p.join("show.2.toe").exists() && !p.join("Backup").exists() && !p.join("thumb.jpg").exists());
+        let meta: Value = serde_json::from_str(&fs::read_to_string(p.join("project.json")).unwrap()).unwrap();
+        assert_eq!(meta["name"], "跨年");
+        assert!(!p.join("assets").exists(), "自己的模板不加默认的子文件夹");
+
+        // 模板里没有 .toe：用自带的
+        let c2 = create_project_at(r.clone(), "空的".into(), "空的".into(), "x".into(), Some(builtin.clone()), Some(tdir.join("空模板"))).unwrap();
+        assert_eq!(fs::read(PathBuf::from(&c2.path).join("空的.toe")).unwrap(), b"builtin");
+        assert!(PathBuf::from(&c2.path).join("a/b").is_dir());
+
+        // 把工程存成模板：只有文件夹结构和 .toe
+        save_template_at(&tdir, &p, "跨年模板").unwrap();
+        let s = tdir.join("跨年模板");
+        assert!(s.join("素材/视频").is_dir() && s.join("灯光").is_dir());
+        assert!(!s.join("素材/视频/开场.txt").exists() && !s.join("清单.md").exists() && !s.join("project.json").exists());
+        assert_eq!(fs::read(s.join("template.toe")).unwrap(), b"new");
+        assert!(save_template_at(&tdir, &p, "跨年模板").is_err(), "重名");
+        assert!(save_template_at(&tdir, &p, "../外面").is_err() && save_template_at(&tdir, &p, "_x").is_err() && save_template_at(&tdir, &p, "  ").is_err());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn user_theme_files() {
+        let d = tmp("themes");
+        assert!(read_user_themes(&d.join("没有这个文件夹")).is_empty());
+        prepare_themes_dir(&d).unwrap();
+        assert!(d.join("主题制作规范.md").is_file());
+        // 模板以 _ 开头，不算主题；它本身是合法的 JSON
+        assert!(read_user_themes(&d).is_empty());
+        let tpl: Value = serde_json::from_str(&fs::read_to_string(d.join("_template.json")).unwrap()).unwrap();
+        assert_eq!(tpl["format"], 1);
+        assert!(tpl["light"]["ink"].is_string() && tpl["dark"]["onInk"].is_string());
+        // 用户改过的模板不覆盖
+        fs::write(d.join("_template.json"), "mine").unwrap();
+        prepare_themes_dir(&d).unwrap();
+        assert_eq!(fs::read_to_string(d.join("_template.json")).unwrap(), "mine");
+
+        fs::write(d.join("a.json"), "\u{feff}{\"format\":1,\"id\":\"a\"}").unwrap();
+        fs::write(d.join("b.json"), "{ 坏的").unwrap();
+        fs::write(d.join("note.txt"), "x").unwrap();
+        let list = read_user_themes(&d);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].file, "a.json");
+        assert_eq!(list[0].data["id"], "a");
+        assert!(list[0].error.is_none());
+        assert!(list[1].error.as_ref().unwrap().contains("JSON"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn version_groups() {
         let d = tmp("ver");
         for f in ["StreamDiffusionTD_0.3.0.toe", "StreamDiffusionTD_0.3.0.6.toe", "ue5.1.toe", "ue5.13.toe", "a.toe", "a.2.toe"] {
@@ -1089,7 +1460,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![scan_projects, inspect_import, create_project, save_meta, open_project, reveal, delete_project, move_project, set_folder_icon, read_image, save_custom_logo, clear_custom_logo, custom_logo])
+        .invoke_handler(tauri::generate_handler![scan_projects, inspect_import, list_templates, open_templates_dir, save_as_template, create_project, save_meta, open_project, reveal, delete_project, move_project, set_folder_icon, read_image, save_custom_logo, clear_custom_logo, custom_logo, list_user_themes, open_themes_dir])
         .run(tauri::generate_context!())
         .expect("启动失败");
 }
