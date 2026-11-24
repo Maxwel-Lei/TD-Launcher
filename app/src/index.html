@@ -259,6 +259,27 @@ pre.tree b{color:var(--ink);font-weight:500}
 .ann-sec .ann-sub{margin:0 0 6px;font-size:12px;color:var(--mute)}
 .ann-row{display:grid;grid-template-columns:20px minmax(0,1fr) 128px;gap:6px 10px;align-items:center;padding:8px 10px;background:var(--bg2);transition:opacity .15s}
 .ann-row.off{opacity:.45}
+.logo-set{display:flex;gap:16px;align-items:center;padding:12px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line)}
+.logo-prev{flex:0 0 96px;height:96px;display:flex;align-items:center;justify-content:center;background:var(--bg1)}
+.logo-prev canvas{width:80px;height:80px}
+.logo-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;font-size:14px}
+.logo-txt small{color:var(--mute);font-size:12px;line-height:1.7}
+.logo-acts{display:flex;align-items:center;gap:6px;margin-top:2px}
+.logo-acts .btn{height:38px}
+img.logo{height:38px;width:auto;max-width:76px;object-fit:contain}
+.set-btn{margin-top:auto;align-self:flex-start;display:inline-flex;align-items:center;gap:10px;height:40px;padding:0 12px;border:0;background:transparent;color:var(--ink2);font:inherit;font-size:13px;cursor:pointer}
+.set-btn:hover{color:var(--ink);background:var(--bg2)}
+.set-row{align-items:flex-start;padding:10px 12px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line)}
+.set-row input{margin-top:2px;flex:0 0 18px}
+.set-row{justify-content:flex-start}
+.set-row span{flex:1;display:flex;flex-direction:column;align-items:flex-start;gap:4px;font-size:14px;text-align:left}
+.set-row small{margin:0}
+.set-row small{line-height:1.7}
+.set-row.off{opacity:.5;cursor:default}
+.set-info{padding:10px 12px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line);font-size:13px;line-height:1.8;color:var(--ink2)}
+.set-info button{border:0;background:none;padding:0;color:var(--ink);font-size:13px;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.ext{flex:0 0 auto;padding:1px 6px;font-size:11px;color:var(--ink2);box-shadow:inset 0 0 0 1px var(--line2)}
+body.dropping #main::after{content:"松开鼠标，导入这个文件夹";position:absolute;inset:12px;z-index:5;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:500;color:var(--ink);background:rgba(244,244,241,.92);box-shadow:inset 0 0 0 2px var(--ink);pointer-events:none}
 .ann-row input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--ink)}
 .ann-row .inp{height:34px;padding:0 10px;font-size:13px;background-color:var(--bg1)}
 .ann-row .sub{grid-column:2 / 4;font-size:12px;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -295,6 +316,10 @@ pre.tree b{color:var(--ink);font-weight:500}
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6B6B65" stroke-width="2" stroke-linecap="square" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
       <input class="cut" id="q" type="search" placeholder="搜索工程名称">
     </label>
+    <button class="btn ghost cut cut-line" type="button" id="openImport" title="导入已有的 TD 工程文件夹，也可以直接把文件夹拖进窗口">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M4 20h16"/></svg>
+      导入
+    </button>
     <button class="btn cut" type="button" id="openNew">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M12 4v16M4 12h16"/></svg>
       新建工程
@@ -323,6 +348,10 @@ pre.tree b{color:var(--ink);font-weight:500}
       <div id="grpList"></div>
     </section>
     <button class="btn text" type="button" id="clear" hidden style="margin:-14px 0 0 8px;align-self:flex-start">清除筛选</button>
+    <button class="set-btn" type="button" id="openSet">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><rect x="14" y="5" width="4" height="4"/><rect x="6" y="15" width="4" height="4"/></svg>
+      设置
+    </button>
   </aside>
 
   <main id="main">
@@ -434,6 +463,71 @@ pre.tree b{color:var(--ink);font-weight:500}
     <button class="btn text" type="button" data-close>取消</button>
     <button class="btn cut" type="button" id="aGo">写入</button>
   </div>
+</div>
+
+<!-- 导入工程（企划 §3） -->
+<div class="modal cut ann" id="imp" role="dialog" aria-modal="true" aria-labelledby="iTitle">
+  <div class="pane-h">
+    <canvas id="ifx" aria-hidden="true"></canvas>
+    <div><span class="label">Import</span><h2 id="iTitle">导入工程</h2></div>
+    <button class="x" type="button" data-close aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg></button>
+  </div>
+  <div class="pane-b">
+    <p class="ann-intro">在你选的文件夹里找到了下面这些 TD 工程。勾选的会登记到启动器里：文件留在原处，不移动、不改名，只给还没有标注的工程新增一个 project.json。名字和日期是软件推测的，可以直接改。</p>
+    <p class="ann-intro" id="iNote" hidden></p>
+    <div id="iList"></div>
+  </div>
+  <div class="pane-f">
+    <button class="btn text" type="button" data-close>取消</button>
+    <button class="btn cut" type="button" id="iGo">导入</button>
+  </div>
+</div>
+
+<!-- 设置 -->
+<div class="modal cut" id="set" role="dialog" aria-modal="true" aria-labelledby="sTitle">
+  <div class="pane-h">
+    <canvas id="sfx" aria-hidden="true"></canvas>
+    <div><span class="label">Settings</span><h2 id="sTitle">设置</h2></div>
+    <button class="x" type="button" data-close aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg></button>
+  </div>
+  <div class="pane-b">
+    <div class="field">
+      <div class="fl">工程根目录</div>
+      <div class="inp cut cut-line pathbox"><span id="sRoot"></span><button class="btn text" type="button" data-pick-root>更改</button></div>
+    </div>
+    <div class="field">
+      <div class="fl">标志</div>
+      <div class="logo-set">
+        <div class="logo-prev"><canvas id="sLogoPrev" width="192" height="192" aria-label="文件夹图标预览"></canvas></div>
+        <div class="logo-txt">
+          <span id="sLogoState">正在使用默认标志</span>
+          <small>换成你自己的标志：左上角和工程文件夹图标都会跟着换。PNG（最好是透明底）、SVG、JPG 都可以。</small>
+          <div class="logo-acts">
+            <button class="btn ghost cut cut-line" type="button" id="sLogoPick">选择图片…</button>
+            <button class="btn text" type="button" id="sLogoReset" hidden>恢复默认</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <div class="fl">文件夹</div>
+      <label class="chk set-row" id="sIconRow"><input type="checkbox" id="sIcon"><span>给工程文件夹换图标<small>已标注的工程文件夹在资源管理器里显示成带标志的文件夹。会在每个工程文件夹里放两个隐藏文件（desktop.ini 和 .td-folder.ico），关掉这一项就全部撤回。</small></span></label>
+    </div>
+    <div class="field">
+      <div class="fl">新建工程</div>
+      <label class="chk set-row"><input type="checkbox" id="sDate"><span>文件夹名前面加日期<small>例如 2026-11-25_粒子雨</small></span></label>
+      <label class="chk set-row"><input type="checkbox" id="sOpen"><span>创建后自动用 TD 打开</span></label>
+    </div>
+    <div class="field">
+      <div class="fl">扫描</div>
+      <label class="chk set-row"><input type="checkbox" id="sRescan"><span>切回启动器时自动重新扫描<small>关掉后按 F5 手动刷新</small></span></label>
+    </div>
+    <div class="field">
+      <div class="fl">导入的工程</div>
+      <div class="set-info" id="sImports"></div>
+    </div>
+  </div>
+  <div class="pane-f saved">改动立即生效，只记在这台电脑上</div>
 </div>
 
 <!-- 批量操作栏（企划 §6.3） -->

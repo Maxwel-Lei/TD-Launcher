@@ -4,7 +4,9 @@
 
 ## 直接用
 
-安装包：`src-tauri/target/release/bundle/nsis/TD Launcher_0.1.0_x64-setup.exe`，双击安装。
+安装包：`src-tauri/target/release/bundle/nsis/TD Launcher_0.2.0_x64-setup.exe`，双击安装（会覆盖旧版本，设置和标注都保留）。
+
+改了代码以后重新打包：双击 `app` 文件夹里的 `重新打包并安装.bat`，它会打包并自动打开安装程序。
 
 第一次打开会让你选**工程根目录**，比如 `F:\Projects\Touchdesigner Projects`。
 
@@ -12,6 +14,10 @@
 - 识别规则见企划 §6.1：跳过 `Backup`、`_` 开头的文件夹、`00_Library`、Mac / Windows 系统杂项、崩溃存档；工程里附带的 `.toe` 不算单独的工程。
 - 侧栏"文件夹"按第一层分类筛选。
 - 没有 `project.json` 的老工程：点卡片墙上方的"识别并补标注"一次补上。没勾选的会被忽略，侧栏"全部恢复"可以找回。
+- 导入根目录以外的工程：点右上角"导入"选文件夹，或把文件夹直接拖进窗口。选的文件夹本身是工程就直接导入；选的是上级文件夹，就列出里面所有工程让你勾选。导入是**原地登记**：文件不移动、不改名，只给没有标注的工程新增一个 `project.json`。导入的工程在卡片上标"外部"，侧栏"文件夹"里归在"外部导入"。删除它们只是取消登记，不动文件；用批量操作"移动到…"可以把它们搬进根目录。
+- 设置（左下角）：给工程文件夹换图标、新建时加日期前缀、创建后自动用 TD 打开、切回时自动重新扫描。
+- 自定义标志（设置里）：选一张图片（PNG 最好透明底、SVG、JPG），左上角的标志和工程文件夹图标都换成它；浅色标志会自动配深色底。存在软件的数据目录里，重装不丢，可以随时恢复默认。
+- 文件夹图标（仅 Windows）：打开后，已标注的工程文件夹在资源管理器里显示成带标志的文件夹。做法是在工程文件夹里放两个隐藏文件 `desktop.ini` 和 `.td-folder.ico`；关掉设置就全部撤回。文件夹原来就有自己的 `desktop.ini` 的不会改。图标文件是 `src-tauri/resources/template/folder.ico`，想换图标就替换它再重新打包。
 - 批量管理：Ctrl 点卡片多选、Shift 连选、Ctrl+A 全选，底部操作栏可改状态、加 / 去标签、移动到分类文件夹、移到回收站。
 
 快捷键：`Ctrl+N` 新建工程，`F5` 重新扫描，`Ctrl+A` 全选，`Esc` 关闭弹窗或取消选择。从 TD 切回启动器时会自动重新扫描，刚存的缩略图会出现。
@@ -55,8 +61,10 @@ cd src-tauri && cargo test   # 后端测试
 | 路径 | 内容 |
 | --- | --- |
 | `src/index.html` | 界面和样式 |
-| `src/app.js` | 界面逻辑、融球点阵 |
-| `src-tauri/src/lib.rs` | 后端：扫描、新建、读写 project.json、打开、在文件夹中显示 |
+| `src/app.js` | 界面逻辑、渐变像素装饰、自定义标志的合成 |
+| `src-tauri/src/lib.rs` | 后端：扫描、新建、导入、读写 project.json、打开、在文件夹中显示、移动、文件夹图标 |
+| `src-tauri/resources/template/folder.ico` | 工程文件夹图标 |
+| `重新打包并安装.bat` | 一键打包并打开安装程序 |
 | `src-tauri/tauri.conf.json` | 窗口、打包设置 |
 | `tools/make_template.py` | 在 TD 里生成模板 .toe |
 | `tools/preview.html`、`tools/mock-tauri.js` | 浏览器预览用的假后端 |

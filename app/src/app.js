@@ -1,6 +1,9 @@
 /* TD 工程启动器 · 前端
    界面沿用 demo/index.html；数据来自 Rust 后端（src-tauri/src/lib.rs）：
-     scan_projects   扫描根目录下的工程
+     scan_projects   扫描根目录下的工程，加上登记过的外部工程
+     inspect_import  导入前看一眼选的文件夹里有哪些工程（只读）
+     set_folder_icon 给工程文件夹换上 / 撤回图标
+     read_image / save_custom_logo / clear_custom_logo / custom_logo  自定义标志
      create_project  按模板建文件夹
      save_meta       写回 project.json
      open_project    用系统默认程序（TD）打开 .toe
@@ -25,6 +28,18 @@ const ui = { status: '全部', tag: '', group: null, q: '', openId: null, scanni
 const topGroup = p => p.group ? p.group.split('/')[0] : '';
 let root = localStorage.getItem('root') || '';
 let projects = [];
+const IS_WIN = /Windows/i.test(navigator.userAgent);
+
+// 设置：只记在这台电脑上
+const flag = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v === '1'; };
+const cfg = { folderIcon: flag('folderIcon', false), datePrefix: flag('datePrefix', true), autoOpen: flag('autoOpen', true), autoRescan: flag('autoRescan', true) };
+function setCfg(k, v) { cfg[k] = v; try { localStorage.setItem(k, v ? '1' : '0'); } catch (e) {} }
+
+// 导入的工程：不在根目录里，只登记它们的位置，文件留在原处（企划 §3）
+let imports = [];
+try { imports = JSON.parse(localStorage.getItem('imports') || '[]').filter(x => typeof x === 'string'); } catch (e) { imports = []; }
+function saveImports() { try { localStorage.setItem('imports', JSON.stringify(imports)); } catch (e) {} }
+function dropImport(path) { imports = imports.filter(x => x !== path); saveImports(); }
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -32,93 +47,35 @@ const today = () => { const d = new Date(), p = n => String(n).padStart(2, '0');
 const fmtTime = s => { if (!s) return ''; const d = new Date(s * 1000), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 const shortPath = p => p.replace(/\\/g, '/');
 
-/* ================= 融球点阵（与 Demo 相同） ================= */
-const WAIST = 0.42;
+/* ================= 渐变像素（有序抖动） =================
+   装饰用的静态图案：一块颜色从中心往外越来越稀，用 4×4 拜耳矩阵决定每个小方块画不画。
+   registerFx(canvas, { layers: [{ S, color, seed, clusters: [{ x, y, rx, ry }] }] })
+   x / y 是中心在画布里的比例位置，rx / ry 是半径（像素），S 越大方块越大。不做动画，只在尺寸变化时重画。 */
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 const fx = new Map();
-const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-function seeded(id) { let s = (Math.abs(id) % 100000) * 9301 + 49297; return () => (s = (s * 9301 + 49297) % 233280) / 233280; }
 function hash(str) { let h = 0; for (const ch of str) h = (h * 31 + ch.charCodeAt(0)) % 99991; return h; }
-function registerFx(canvas, cfg) { if (!canvas) return; fx.set(canvas, cfg); drawFx(canvas, cfg, T); }
-function sizeCanvas(c) {
+function registerFx(canvas, cfg) { if (!canvas) return; fx.set(canvas, cfg); drawFx(canvas, cfg); }
+function drawFx(c, cfg) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2), w = c.clientWidth, h = c.clientHeight;
-  if (!w || !h) return false;
-  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
-  c._w = w; c._h = h; c._dpr = dpr; return true;
-}
-function buildLayer(L, w, h) {
-  const S = L.S, R = S * (L.ratio || 0.28), rnd = seeded(L.seed || 1);
-  const cols = Math.ceil(w / S) + 1, rows = Math.ceil(h / S) + 1;
-  const ox = (w - (cols - 1) * S) / 2, oy = (h - (rows - 1) * S) / 2;
-  const at = {}, nodes = [], links = [];
-  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
-    const x = ox + i * S, y = oy + j * S;
-    const inside = L.clusters.some(c => ((x - c.x * w) / c.rx) ** 2 + ((y - c.y * h) / c.ry) ** 2 <= 1);
-    if (inside && rnd() < (L.keep ?? 0.85)) { const n = { x, y }; nodes.push(n); at[i + ',' + j] = n; }
-  }
-  for (const key in at) {
-    const [i, j] = key.split(',').map(Number), a = at[key];
-    for (const b of [at[(i + 1) + ',' + j], at[i + ',' + (j + 1)]]) {
-      if (b && rnd() < (L.linkP ?? 0.6)) links.push({ a, b, sp: 0.35 + rnd() * 0.5, ph: rnd() * 6.283, bias: rnd() * 0.8 - 0.3 });
-    }
-  }
-  return { R, nodes, links };
-}
-const TAU = Math.PI * 2;
-function arcThrough(ctx, c, r, p1, p2, m) {
-  const a1 = Math.atan2(p1[1] - c[1], p1[0] - c[0]), a2 = Math.atan2(p2[1] - c[1], p2[0] - c[0]), am = Math.atan2(m[1] - c[1], m[0] - c[0]);
-  const sweep = ((a2 - a1) % TAU + TAU) % TAU, sm = ((am - a1) % TAU + TAU) % TAU;
-  ctx.arc(c[0], c[1], r, a1, a2, !(sm < sweep));
-}
-function bridge(ctx, A, B, R, wst) {
-  const dx = B.x - A.x, dy = B.y - A.y, d = Math.hypot(dx, dy), ux = dx / d, uy = dy / d, nx = -uy, ny = ux, half = d / 2;
-  const f = (wst * wst + half * half - R * R) / (2 * (R - wst));
-  if (!(f > 0.01)) return;
-  const mx = A.x + ux * half, my = A.y + uy * half, k = R / (R + f);
-  const Ct = [mx + nx * (wst + f), my + ny * (wst + f)], Cb = [mx - nx * (wst + f), my - ny * (wst + f)];
-  const tp = (P, C) => [P.x + (C[0] - P.x) * k, P.y + (C[1] - P.y) * k];
-  const TAt = tp(A, Ct), TBt = tp(B, Ct), TAb = tp(A, Cb), TBb = tp(B, Cb);
-  ctx.moveTo(TAt[0], TAt[1]);
-  arcThrough(ctx, Ct, f, TAt, TBt, [mx + nx * wst, my + ny * wst]);
-  ctx.lineTo(TBb[0], TBb[1]);
-  arcThrough(ctx, Cb, f, TBb, TAb, [mx - nx * wst, my - ny * wst]);
-  ctx.closePath();
-}
-function drawFx(c, cfg, t) {
-  if (!sizeCanvas(c)) return;
-  const ctx = c.getContext('2d'), w = c._w, h = c._h;
-  ctx.setTransform(c._dpr, 0, 0, c._dpr, 0, 0);
+  if (!w || !h || !cfg) return;
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   for (const L of cfg.layers) {
-    const key = w + 'x' + h;
-    if (L._key !== key) { L._g = buildLayer(L, w, h); L._key = key; }
-    const { R, nodes, links } = L._g;
+    const P = Math.max(4, Math.round(L.S / 4)), ox = (L.seed || 0) & 3, oy = ((L.seed || 0) >> 2) & 3;
     ctx.fillStyle = L.color;
-    ctx.beginPath();
-    for (const n of nodes) { ctx.moveTo(n.x + R, n.y); ctx.arc(n.x, n.y, R, 0, TAU); }
-    ctx.fill();
-    ctx.beginPath();
-    for (const l of links) {
-      let s = Math.sin(t * l.sp + l.ph) * 1.6 + l.bias;
-      if (s <= 0) continue;
-      s = Math.min(1, s); s = s * s * (3 - 2 * s);
-      const wst = s * R * WAIST;
-      if (wst > 0.3) bridge(ctx, l.a, l.b, R, wst);
+    for (let j = 0; j * P < h; j++) for (let i = 0; i * P < w; i++) {
+      const x = (i + 0.5) * P, y = (j + 0.5) * P;
+      let v = 0;
+      // 浓度：中心最密，到 1.7 倍半径处降到 0
+      for (const k of L.clusters) v = Math.max(v, 1 - Math.hypot((x - k.x * w) / k.rx, (y - k.y * h) / k.ry) / 1.7);
+      if (v * 0.9 > (BAYER[((j + oy) & 3) * 4 + ((i + ox) & 3)] + 0.5) / 16) ctx.fillRect(i * P, j * P, P, P);
     }
-    ctx.fill();
   }
 }
-let T = 0, last = performance.now();
-function loop(now) {
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  if (!reduceMotion && !document.hidden) T += dt * 0.9;
-  for (const [c, cfg] of fx) {
-    if (!c.isConnected) { fx.delete(c); continue; }
-    if (c.offsetParent === null && c.id !== 'bgfx') continue;
-    drawFx(c, cfg, T);
-  }
-  requestAnimationFrame(loop);
-}
-requestAnimationFrame(loop);
+function redrawFx() { for (const [c, cfg] of fx) { if (!c.isConnected) fx.delete(c); else drawFx(c, cfg); } }
+let fxT; window.addEventListener('resize', () => { clearTimeout(fxT); fxT = setTimeout(redrawFx, 120); });
 
 /* ================= 数据 ================= */
 function normalize(raw) {
@@ -135,6 +92,8 @@ function normalize(raw) {
     modified: raw.modified,
     hasMeta: raw.hasMeta,
     confidence: raw.confidence || 'maybe',
+    external: !!raw.external,
+    folderIcon: !!raw.folderIcon,
     toeBases: raw.toeBases || [],
     mainToe: m.mainToe || '',
     name: m.name || raw.name,
@@ -159,9 +118,11 @@ async function scan({ quiet = false } = {}) {
   const seq = ++scanSeq;
   const slow = quiet ? null : setTimeout(() => { ui.scanning = true; renderView(); }, 180);
   try {
-    const list = await invoke('scan_projects', { root });
+    const list = await invoke('scan_projects', { root, extra: imports });
     if (seq !== scanSeq) return;
     loadIgnored();
+    ui.live = new Set(list.map(p => p.path));
+    ui.missingN = imports.filter(x => !ui.live.has(x)).length;
     ui.ignoredN = list.filter(p => ignored.has(p.path)).length;
     projects = list.filter(p => !ignored.has(p.path)).map(normalize);
     ui.error = '';
@@ -173,6 +134,26 @@ async function scan({ quiet = false } = {}) {
   }
   render();
   if (ui.openId) { const p = cur(); if (p) refreshDetailHead(p); else closeAll(); }
+  if (cfg.folderIcon) syncIcons(true, true);
+}
+
+/* ================= 文件夹图标 ================= */
+// 只给已标注（有 project.json）的工程换；换不成的（比如文件夹原来就有自己的图标设置）这次运行里不再重试
+const iconFailed = new Set();
+let iconBusy = false;
+async function syncIcons(on, quiet, redo) {
+  if (!IS_WIN || iconBusy) return;
+  // redo：标志换了，已经有图标的文件夹也重写一遍
+  const list = on ? projects.filter(p => p.hasMeta && (redo || !p.folderIcon) && !iconFailed.has(p.path)) : projects.filter(p => p.folderIcon);
+  if (!list.length) { if (!quiet) toast(on ? '所有已标注的工程文件夹都已经换好图标了' : '没有需要撤回的图标'); return; }
+  iconBusy = true;
+  let ok = 0; const bad = [];
+  for (const p of list) {
+    try { await invoke('set_folder_icon', { path: p.path, on }); p.folderIcon = on; ok++; }
+    catch (e) { iconFailed.add(p.path); bad.push(`「${p.name}」${e}`); }
+  }
+  iconBusy = false;
+  if (!quiet || bad.length) toast((on ? `已给 ${ok} 个工程文件夹换上图标` : `已撤回 ${ok} 个文件夹的图标`) + (bad.length ? `；${bad.length} 个没成功：${bad.slice(0, 3).join('；')}` : '') + (ok && !quiet ? '。资源管理器里没变的话按 F5 刷新' : ''));
 }
 
 let saveTimers = {};
@@ -199,6 +180,7 @@ function syncRoot() {
   $('#rootPath').textContent = root ? shortPath(root) : '未选择';
   $('#rootPath').title = root;
   $('#npRoot').textContent = root ? shortPath(root) : '未选择';
+  $('#sRoot').textContent = root ? shortPath(root) : '未选择';
 }
 
 /* ================= 渲染 ================= */
@@ -212,7 +194,8 @@ function renderSide() {
   const tags = [...new Set(projects.flatMap(p => p.tags))];
   $('#tagList').innerHTML = tags.length ? tags.map(t => `<button class="tag" type="button" data-tag="${esc(t)}" aria-pressed="${ui.tag === t}">${esc(t)}</button>`).join('')
     : '<span style="font-size:12px;color:var(--faint);padding:0 6px">在工程详情里添加标签</span>';
-  $('#ignRow').innerHTML = ui.ignoredN ? `<div class="ign">已忽略 ${ui.ignoredN} 个文件夹 · <button type="button" data-unignore>全部恢复</button></div>` : '';
+  $('#ignRow').innerHTML = (ui.ignoredN ? `<div class="ign">已忽略 ${ui.ignoredN} 个文件夹 · <button type="button" data-unignore>全部恢复</button></div>` : '') +
+    (ui.missingN ? `<div class="ign">有 ${ui.missingN} 个导入的工程现在读不到（被移走或硬盘没插） · <button type="button" data-unmissing>不再登记</button></div>` : '');
   // 文件夹：按根目录下第一层分类文件夹分组；只有一组时不显示
   const groups = [...new Set(projects.map(topGroup))].sort((a, b) => a.localeCompare(b, 'zh'));
   $('#grpSec').hidden = groups.length < 2;
@@ -228,7 +211,7 @@ function cardHTML(p) {
   return `<div class="card-wrap${ui.sel.has(p.id) ? ' sel' : ''}" data-id="${esc(p.id)}"><button class="pick" type="button" data-pick="${esc(p.id)}" aria-pressed="${ui.sel.has(p.id)}" aria-label="选择 ${esc(p.name)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"><path d="M4 12.5l5 5L20 6.5"/></svg></button><button class="card cut" type="button" data-open="${esc(p.id)}">
     <div class="thumb${th ? '' : ' empty'}">${th ? `<img src="${th}" alt="" loading="lazy">` : `<canvas data-ph="${hash(p.id)}" aria-hidden="true"></canvas><div class="hint"><b>还没有缩略图</b>${p.toe ? '用 TD 打开并保存一次即可生成' : '这个文件夹里还没有 .toe'}</div>`}</div>
     <div class="info">
-      <div class="r1"><span class="name" title="${esc(p.name)}">${esc(p.name)}</span><span class="date">${esc(p.created)}</span></div>
+      <div class="r1"><span class="name" title="${esc(p.name)}">${esc(p.name)}</span>${p.external ? '<span class="ext" title="文件在工程根目录外面，留在原处">外部</span>' : ''}<span class="date">${esc(p.created)}</span></div>
       <div class="r2"><i class="ico ${ICON[p.status]}"></i><span class="st">${p.status}</span><span class="sep">/</span><span class="tg">${p.tags.map(esc).join(' · ') || '无标签'}</span></div>
     </div></button></div>`;
 }
@@ -253,7 +236,7 @@ function renderView() {
     return;
   } else if (!projects.length) {
     v.innerHTML = emptyHTML('这里还没有工程', '新建一个工程，或者把工程根目录换成你已有 TD 工程所在的文件夹。',
-      '<button class="btn cut" type="button" data-new>新建第一个工程</button><button class="btn ghost cut cut-line" type="button" data-pick-root>换一个根目录</button>');
+      '<button class="btn cut" type="button" data-new>新建第一个工程</button><button class="btn ghost cut cut-line" type="button" data-import>导入已有工程</button><button class="btn ghost cut cut-line" type="button" data-pick-root>换一个根目录</button>');
   } else {
     const q = ui.q.trim().toLowerCase();
     const list = projects.filter(p => (ui.status === '全部' || p.status === ui.status) && (!ui.tag || p.tags.includes(ui.tag)) &&
@@ -297,7 +280,7 @@ $('#npName').addEventListener('input', e => {
   updateTree();
 });
 $('#npName').addEventListener('keydown', e => { if (e.key === 'Enter') $('#npCreate').click(); });
-$('#npDate').addEventListener('change', e => { localStorage.setItem('datePrefix', e.target.checked ? '1' : '0'); updateTree(); });
+$('#npDate').addEventListener('change', e => { setCfg('datePrefix', e.target.checked); updateTree(); });
 $('#npCreate').addEventListener('click', async () => {
   if (!root) { toast('先选择工程根目录'); return; }
   const { base, folder } = folderName();
@@ -307,7 +290,9 @@ $('#npCreate').addEventListener('click', async () => {
     const res = await invoke('create_project', { root, folder, name: base, created: today() });
     closeAll();
     await scan({ quiet: true });
-    if (res.toe) {
+    if (res.toe && !cfg.autoOpen) {
+      toast(`已创建「${base}」`);
+    } else if (res.toe) {
       try { await invoke('open_project', { path: res.path }); toast(`已创建「${base}」，正在用 TD 打开`); }
       catch (e) { toast(`已创建「${base}」，但打开失败：${e}`); }
     } else {
@@ -320,7 +305,8 @@ $('#npCreate').addEventListener('click', async () => {
 function openNew() {
   if (!root) { pickRoot(); return; }
   closeAll(); $('#npWarn').hidden = true; $('#npName').value = '';
-  $('#npDate').checked = localStorage.getItem('datePrefix') !== '0';
+  $('#npDate').checked = cfg.datePrefix;
+  $('#npCreate').textContent = cfg.autoOpen ? '创建并用 TD 打开' : '创建';
   updateTree(); syncRoot();
   $('#scrim').classList.add('on'); $('#modal').classList.add('on');
   registerFx($('#mfx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 4, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.3, rx: 110, ry: 70 }] }] });
@@ -336,7 +322,9 @@ function refreshDetailHead(p) {
   if (!th) registerFx($('#dph'), { layers: [{ S: 30, color: '#BDBDB6', seed: hash(p.id), keep: 0.85, linkP: 0.65, clusters: [{ x: 0.5, y: 0.5, rx: 150, ry: 80 }] }] });
   $('#dName').textContent = p.name;
   $('#dPath').textContent = shortPath(p.path);
-  $('#dPath').title = p.group ? '分类：' + p.group : '';
+  $('#dPath').title = p.external ? '外部导入：文件在工程根目录外面，留在原处' : p.group ? '分类：' + p.group : '';
+  $('#dDel').textContent = p.external ? '从启动器移除' : '删除工程';
+  $('#dDel').nextElementSibling.textContent = p.external ? '只是不再显示，文件夹和文件都不动' : '整个文件夹移到回收站，可以恢复';
   $('#dMeta').textContent = `创建于 ${p.created || '未知'} · ${th ? '缩略图更新于 ' + fmtTime(p.thumbMtime) : '还没有缩略图'}${p.toe ? '' : ' · 没有 .toe'}`;
   $('#dOpen').disabled = !p.toe;
   const many = p.toeBases.length > 1;
@@ -400,9 +388,24 @@ $('#cYes').addEventListener('click', async () => {
   try { await f(); } finally { $('#cYes').disabled = false; closeConfirm(); }
 });
 
+// 导入的工程：只取消登记，不动文件；换过的文件夹图标一起撤回
+async function unimport(list) {
+  for (const p of list) {
+    if (p.folderIcon) { try { await invoke('set_folder_icon', { path: p.path, on: false }); } catch (e) {} }
+    dropImport(p.path);
+  }
+}
 // 删除单个工程：整个文件夹移到回收站
 $('#dDel').addEventListener('click', () => {
   const p = cur(); if (!p) return;
+  if (p.external) {
+    confirmBox({
+      label: 'Remove', title: '从启动器移除？', yes: '移除',
+      html: `「<b>${esc(p.name)}</b>」是导入的工程。移除后只是不再显示在这里，文件夹和里面的文件都不动，以后可以重新导入。<br><span style="font-size:12px;color:var(--mute)">${esc(p.path)}</span>`,
+      onYes: async () => { await unimport([p]); closeAll(); projects = projects.filter(x => x !== p); render(); toast(`已移除「${p.name}」，文件没有动`); scan({ quiet: true }); }
+    });
+    return;
+  }
   confirmBox({
     label: 'Delete', title: '删除工程？', yes: '移到回收站',
     html: `「<b>${esc(p.name)}</b>」的整个文件夹（.toe、素材、导出都在里面）会移到系统回收站。<br>删错了可以从回收站还原。<br><span style="font-size:12px;color:var(--mute)">${esc(p.path)}</span>`,
@@ -418,7 +421,7 @@ $('#dDel').addEventListener('click', () => {
 });
 
 /* ================= 多选与批量管理（企划 §6.3） ================= */
-ui.sel = new Set(); ui.anchor = null; ui.visible = []; ui.ignoredN = 0;
+ui.sel = new Set(); ui.anchor = null; ui.visible = []; ui.ignoredN = 0; ui.missingN = 0;
 const selected = () => projects.filter(p => ui.sel.has(p.id));
 function syncSel() {
   for (const id of [...ui.sel]) if (!projects.some(p => p.id === id)) ui.sel.delete(id);
@@ -472,9 +475,10 @@ $('#bpop').addEventListener('keydown', e => {
 
 // 可以移进去的分类文件夹：根目录 + 现有工程所在的各级分类；工程文件夹本身不算
 function moveTargets() {
-  const projRel = new Set(projects.map(p => p.group ? p.group + '/' + p.folder : p.folder));
+  const inRoot = projects.filter(p => !p.external);
+  const projRel = new Set(inRoot.map(p => p.group ? p.group + '/' + p.folder : p.folder));
   const out = new Set(['']);
-  for (const p of projects) {
+  for (const p of inRoot) {
     const parts = p.group ? p.group.split('/') : [];
     for (let i = 1; i <= parts.length; i++) {
       const g = parts.slice(0, i).join('/');
@@ -507,10 +511,15 @@ function bact(kind, btn) {
       <div class="addrow"><input class="inp" id="bDestIn" type="text" placeholder="例如 01_商单/客户B"><button class="btn ghost cut-line" type="button" data-bdest-new style="height:40px;--k:0px">移动</button></div>`);
   } else if (kind === 'del') {
     closePop();
+    const ext = sel.filter(p => p.external), own = sel.filter(p => !p.external);
     confirmBox({
-      label: 'Delete', title: `删除 ${sel.length} 个工程？`, yes: '移到回收站',
-      html: `这些工程的整个文件夹会移到系统回收站，删错了可以从回收站还原。${listHTML(sel)}`,
-      onYes: async () => report(await runBatch(sel, p => invoke('delete_project', { root, path: p.path })), n => `已把 ${n} 个工程移到回收站`)
+      label: 'Delete', title: own.length ? `删除 ${own.length} 个工程？` : `从启动器移除 ${ext.length} 个工程？`, yes: own.length ? '移到回收站' : '移除',
+      html: (own.length ? `这些工程的整个文件夹会移到系统回收站，删错了可以从回收站还原。${listHTML(own)}` : '') +
+        (ext.length ? `${own.length ? '<br>' : ''}导入的工程只是从启动器移除，文件夹和文件都不动。${listHTML(ext)}` : ''),
+      onYes: async () => {
+        await unimport(ext);
+        report(await runBatch(own, p => invoke('delete_project', { root, path: p.path })), n => (own.length ? `已把 ${n} 个工程移到回收站` : '') + (ext.length ? `${own.length ? '，' : ''}已移除 ${ext.length} 个导入的工程（文件没有动）` : ''));
+      }
     });
   } else if (kind === 'all') selectAll();
   else if (kind === 'none') clearSel();
@@ -548,8 +557,8 @@ function askBatchMove(dest) {
   const sel = selected(); closePop();
   confirmBox({
     label: 'Move', title: `移动 ${sel.length} 个工程？`, yes: '移动',
-    html: `移到 <b>${esc(dest || '根目录')}</b>，这个分类文件夹不存在会自动新建。<br>移动的是真实文件夹；目标里有同名文件夹、或工程正在 TD 里打开的会跳过。${listHTML(sel)}`,
-    onYes: async () => report(await runBatch(sel, p => invoke('move_project', { root, path: p.path, dest })), n => `已移动 ${n} 个工程`)
+    html: `移到 <b>${esc(dest || '根目录')}</b>，这个分类文件夹不存在会自动新建。<br>移动的是真实文件夹；目标里有同名文件夹、或工程正在 TD 里打开的会跳过。${sel.some(p => p.external) ? '<br>其中导入的工程会从原来的位置搬进工程根目录，和根目录不在同一块硬盘的会跳过。' : ''}${listHTML(sel)}`,
+    onYes: async () => report(await runBatch(sel, async p => { await invoke('move_project', { root, path: p.path, dest, external: p.external }); if (p.external) dropImport(p.path); }), n => `已移动 ${n} 个工程`)
   });
 }
 
@@ -611,9 +620,229 @@ $('#aGo').addEventListener('click', async () => {
   toast(`已给 ${n} 个工程写入标注${ign ? `，忽略 ${ign} 个（侧栏可恢复）` : ''}${bad.length ? `；${bad.length} 个失败：${bad.join('；')}` : ''}`);
 });
 
+/* ================= 导入工程（企划 §3） ================= */
+const baseName = p => String(p).replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+let impList = [];
+async function pickImport() {
+  if (!root) { toast('先选择工程根目录'); pickRoot(); return; }
+  const dirs = await dialog.open({ directory: true, multiple: true, title: '选择要导入的 TD 工程文件夹（选上级文件夹可以批量导入）' });
+  if (!dirs) return;
+  importPaths(Array.isArray(dirs) ? dirs : [dirs]);
+}
+// 选的文件夹本身是工程就直接导入；是上级文件夹就列出里面的工程让你勾选
+async function importPaths(paths) {
+  if (!root) { toast('先选择工程根目录，再导入'); return; }
+  const found = [], notes = [];
+  for (const path of paths) {
+    try {
+      const r = await invoke('inspect_import', { root, path });
+      if (r.insideRoot) notes.push(`「${baseName(path)}」已经在工程根目录里，不用导入`);
+      else if (!r.projects.length) notes.push(`「${baseName(path)}」里没有找到 TD 工程`);
+      else found.push({ direct: r.projects.length === 1 && r.projects[0].path === path, list: r.projects });
+    } catch (e) { notes.push(String(e)); }
+  }
+  const seen = new Set(projects.map(p => p.path)), fresh = [];
+  let dup = 0;
+  for (const f of found) for (const raw of f.list) {
+    if (seen.has(raw.path)) { dup++; continue; }
+    seen.add(raw.path); fresh.push(Object.assign(normalize(raw), { direct: f.direct }));
+  }
+  if (dup) notes.push(`${dup} 个已经在列表里`);
+  if (!fresh.length) { toast(notes.join('；') || '没有可以导入的工程'); return; }
+  if (fresh.every(p => p.direct)) { doImport(fresh.map(p => ({ p, name: p.name, created: p.created })), notes); return; }
+  openImp(fresh, notes);
+}
+function openImp(list, notes) {
+  closeAll(); clearSel(); impList = list;
+  $('#iNote').hidden = !notes.length; $('#iNote').textContent = notes.join('；');
+  $('#iList').innerHTML = `<div class="ann-sec">${list.map(p => `<div class="ann-row" data-iid="${esc(p.id)}">
+      <input type="checkbox" checked aria-label="导入 ${esc(p.name)}">
+      <input class="inp a-name" type="text" value="${esc(p.name)}" aria-label="工程名"${p.hasMeta ? ' disabled title="已经有 project.json，沿用里面的名字"' : ''}>
+      <input class="inp a-date mono" type="text" value="${esc(p.created)}" aria-label="创建日期"${p.hasMeta ? ' disabled' : ''}>
+      <div class="sub">${esc(shortPath(p.path))}${p.toe ? ' · ' + esc(baseName(p.toe)) : ' · 没有 .toe'}${p.hasMeta ? ' · 已有标注' : ''}</div></div>`).join('')}</div>`;
+  updateImp();
+  $('#scrim').classList.add('on'); $('#imp').classList.add('on');
+  registerFx($('#ifx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 14, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.35, rx: 120, ry: 70 }] }] });
+}
+function updateImp() {
+  let on = 0;
+  document.querySelectorAll('#iList .ann-row').forEach(r => { const c = r.querySelector('input[type=checkbox]').checked; r.classList.toggle('off', !c); if (c) on++; });
+  $('#iGo').textContent = `导入 ${on} 个`; $('#iGo').disabled = !on;
+}
+$('#iList').addEventListener('change', updateImp);
+$('#iGo').addEventListener('click', () => {
+  const picked = [];
+  document.querySelectorAll('#iList .ann-row').forEach(r => {
+    const p = impList.find(x => x.id === r.dataset.iid);
+    if (p && r.querySelector('input[type=checkbox]').checked) picked.push({ p, name: r.querySelector('.a-name').value.trim() || p.name, created: r.querySelector('.a-date').value.trim() });
+  });
+  closeAll(); doImport(picked, []);
+});
+async function doImport(items, notes) {
+  let n = 0; const bad = [];
+  for (const { p, name, created } of items) {
+    try {
+      // 还没有标注的：新增一个 project.json；已有的原样不动
+      if (!p.hasMeta) await invoke('save_meta', { path: p.path, meta: { name, tags: [], status: '', client: '', note: '', created } });
+      if (!imports.includes(p.path)) imports.push(p.path);
+      if (ignored.delete(p.path)) saveIgnored();
+      n++;
+    } catch (e) { bad.push(`「${p.name}」${e}`); }
+  }
+  saveImports();
+  await scan({ quiet: true });
+  toast(`已导入 ${n} 个工程，文件留在原处` + (bad.length ? `；${bad.length} 个没成功：${bad.join('；')}` : '') + (notes.length ? '；' + notes.join('；') : ''));
+}
+// 把文件夹（或 .toe）拖进窗口也能导入
+(() => {
+  const wv = window.__TAURI__.webview && window.__TAURI__.webview.getCurrentWebview && window.__TAURI__.webview.getCurrentWebview();
+  if (!wv || !wv.onDragDropEvent) return;
+  wv.onDragDropEvent(ev => {
+    const t = ev.payload && ev.payload.type;
+    if (t === 'enter' || t === 'over') document.body.classList.add('dropping');
+    else document.body.classList.remove('dropping');
+    if (t === 'drop' && ev.payload.paths && ev.payload.paths.length) importPaths(ev.payload.paths);
+  }).catch(() => {});
+})();
+
+/* ================= 自定义标志 ================= */
+// 文件夹图标的画法（256 的画布上）：深色的背板 + 浅色的前板 + 居中的标志。和自带的 folder.ico 是同一个样子
+const DEFAULT_MARK = (() => { const p = document.querySelector('header svg.logo path'); return p ? p.getAttribute('d') : ''; })();
+function folderCanvas(size, logo, dark) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d'); g.scale(size / 256, size / 256);
+  g.fillStyle = '#45453F';
+  g.fill(new Path2D('M20 60a10 10 0 0 1 10-10h62a10 10 0 0 1 8 4l14 18h112a10 10 0 0 1 10 10v126a10 10 0 0 1-10 10h-196a10 10 0 0 1-10-10z'));
+  g.beginPath(); g.roundRect(12, 92, 232, 134, 11);
+  g.fillStyle = dark ? '#1C1C1C' : '#F4F4F1'; g.fill();
+  g.lineWidth = 4; g.strokeStyle = '#45453F'; g.stroke();
+  if (logo) {
+    // 标志放进前板中间 168×100 的范围里，保持比例
+    const k = Math.min(168 / logo.width, 100 / logo.height), w = logo.width * k, h = logo.height * k;
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(logo, 128 - w / 2, 159 - h / 2, w, h);
+  } else if (DEFAULT_MARK) {
+    g.translate(128, 159); g.scale(0.142, 0.142); g.translate(-640 - 57, -640);
+    g.fillStyle = '#111111'; g.fill(new Path2D(DEFAULT_MARK), 'evenodd');
+  }
+  return c;
+}
+const canvasPng = c => new Promise((ok, no) => c.toBlob(b => b ? b.arrayBuffer().then(a => ok(new Uint8Array(a))) : no('图片导出失败'), 'image/png'));
+// 把几张 PNG 打包成一个 .ico（文件头 6 字节 + 每张 16 字节的目录 + PNG 内容）
+function buildIco(items) {
+  const head = 6 + 16 * items.length, out = new Uint8Array(head + items.reduce((n, i) => n + i.png.length, 0)), v = new DataView(out.buffer);
+  v.setUint16(2, 1, true); v.setUint16(4, items.length, true);
+  let off = head;
+  items.forEach((it, i) => {
+    const e = 6 + 16 * i;
+    out[e] = it.size >= 256 ? 0 : it.size; out[e + 1] = it.size >= 256 ? 0 : it.size;
+    v.setUint16(e + 4, 1, true); v.setUint16(e + 6, 32, true);
+    v.setUint32(e + 8, it.png.length, true); v.setUint32(e + 12, off, true);
+    out.set(it.png, off); off += it.png.length;
+  });
+  return out;
+}
+// 把选的图片裁掉四周的透明边、缩进 512 以内，并看它是深色还是浅色（浅色标志配深色前板）
+function prepLogo(img, vector) {
+  // 矢量图（SVG）没有固定像素，按 512 画；位图只缩小不放大
+  const W = img.naturalWidth || img.width || 512, H = img.naturalHeight || img.height || 512, k = vector ? 512 / Math.max(W, H) : Math.min(1, 512 / Math.max(W, H));
+  const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(W * k)); c.height = Math.max(1, Math.round(H * k));
+  const g = c.getContext('2d'); g.drawImage(img, 0, 0, c.width, c.height);
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1, lum = 0, n = 0;
+  for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+    const i = (y * c.width + x) * 4, a = d[i + 3];
+    if (a < 16) continue;
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    lum += (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) * a; n += a;
+  }
+  if (x1 < 0) throw '这张图片是全透明的，换一张';
+  const t = document.createElement('canvas'); t.width = x1 - x0 + 1; t.height = y1 - y0 + 1;
+  t.getContext('2d').drawImage(c, x0, y0, t.width, t.height, 0, 0, t.width, t.height);
+  return { logo: t, dark: lum / n > 170 };
+}
+const ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256];
+let customLogo = null; // { path, src }：正在用的自定义标志
+function showLogo(info) {
+  customLogo = info;
+  const svg = document.querySelector('header svg.logo'); let img = document.querySelector('header img.logo');
+  if (info) {
+    if (!img) { img = document.createElement('img'); img.className = 'logo'; img.alt = ''; svg.after(img); }
+    img.src = info.src; svg.style.display = 'none';
+  } else { if (img) img.remove(); svg.style.display = ''; }
+}
+async function loadLogo() {
+  try { const r = await invoke('custom_logo'); showLogo(r ? { path: r[0], src: convertFileSrc(r[0]) + '?v=' + r[1] } : null); } catch (e) { showLogo(null); }
+}
+function drawLogoPrev() {
+  const c = $('#sLogoPrev'), g = c.getContext('2d'); g.clearRect(0, 0, c.width, c.height);
+  $('#sLogoState').textContent = customLogo ? '正在使用自定义标志' : '正在使用默认标志';
+  $('#sLogoReset').hidden = !customLogo;
+  if (!customLogo) { g.drawImage(folderCanvas(c.width, null, false), 0, 0); return; }
+  // 预览要读像素，所以从后端拿图片内容再画（直接用文件地址画，画布会被浏览器锁住）
+  invoke('read_image', { path: customLogo.path }).then(b => {
+    const url = URL.createObjectURL(new Blob([new Uint8Array(b)], { type: 'image/png' })), img = new Image();
+    img.onload = () => { try { const p = prepLogo(img); g.clearRect(0, 0, c.width, c.height); g.drawImage(folderCanvas(c.width, p.logo, p.dark), 0, 0); } catch (e) {} URL.revokeObjectURL(url); };
+    img.src = url;
+  }).catch(() => {});
+}
+async function pickLogo() {
+  const f = await dialog.open({ multiple: false, title: '选择标志图片', filters: [{ name: '图片', extensions: ['png', 'svg', 'jpg', 'jpeg', 'webp'] }] });
+  if (!f) return;
+  const path = Array.isArray(f) ? f[0] : f, btn = $('#sLogoPick'); btn.disabled = true;
+  try {
+    const bytes = new Uint8Array(await invoke('read_image', { path }));
+    const type = /\.svg$/i.test(path) ? 'image/svg+xml' : /\.jpe?g$/i.test(path) ? 'image/jpeg' : /\.webp$/i.test(path) ? 'image/webp' : 'image/png';
+    const url = URL.createObjectURL(new Blob([bytes], { type }));
+    const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no('这张图片打不开，换一张试试'); i.src = url; });
+    const { logo, dark } = prepLogo(img, type === 'image/svg+xml'); URL.revokeObjectURL(url);
+    const items = [];
+    for (const size of ICO_SIZES) items.push({ size, png: await canvasPng(folderCanvas(size, logo, dark)) });
+    // 左上角用的标志：放进 256 高以内的透明画布
+    const k = Math.min(1, 256 / logo.height), lc = document.createElement('canvas');
+    lc.width = Math.max(1, Math.round(logo.width * k)); lc.height = Math.max(1, Math.round(logo.height * k));
+    lc.getContext('2d').drawImage(logo, 0, 0, lc.width, lc.height);
+    await invoke('save_custom_logo', { logo: Array.from(await canvasPng(lc)), ico: Array.from(buildIco(items)) });
+    await loadLogo(); drawLogoPrev();
+    const redo = cfg.folderIcon && projects.some(p => p.folderIcon);
+    toast('标志已更换' + (redo ? '，正在更新工程文件夹的图标' : ''));
+    if (cfg.folderIcon) { iconFailed.clear(); syncIcons(true, false, true); }
+  } catch (e) { toast('更换失败：' + e); }
+  finally { btn.disabled = false; }
+}
+async function resetLogo() {
+  try {
+    await invoke('clear_custom_logo'); await loadLogo(); drawLogoPrev();
+    toast('已恢复默认标志');
+    if (cfg.folderIcon) { iconFailed.clear(); syncIcons(true, false, true); }
+  } catch (e) { toast('恢复失败：' + e); }
+}
+
+/* ================= 设置 ================= */
+function renderSetInfo() {
+  const n = projects.filter(p => p.external).length;
+  $('#sImports').innerHTML = imports.length
+    ? `登记了 ${imports.length} 个根目录以外的工程${ui.missingN ? `，其中 ${ui.missingN} 个现在读不到 · <button type="button" data-unmissing>不再登记读不到的</button>` : ''}。它们的文件留在原处，侧栏"文件夹"里的"外部导入"可以单独看这 ${n} 个。`
+    : '还没有导入过根目录以外的工程。点右上角"导入"，或者把工程文件夹拖进窗口。';
+}
+function openSet() {
+  closeAll(); syncRoot();
+  $('#sIcon').checked = cfg.folderIcon && IS_WIN; $('#sIcon').disabled = !IS_WIN;
+  $('#sIconRow').classList.toggle('off', !IS_WIN);
+  if (!IS_WIN) $('#sIconRow').title = '目前只支持 Windows';
+  $('#sDate').checked = cfg.datePrefix; $('#sOpen').checked = cfg.autoOpen; $('#sRescan').checked = cfg.autoRescan;
+  renderSetInfo(); drawLogoPrev();
+  $('#scrim').classList.add('on'); $('#set').classList.add('on');
+  registerFx($('#sfx'), { layers: [{ S: 22, color: '#D2D2CC', seed: 16, keep: 0.85, linkP: 0.65, clusters: [{ x: 0.86, y: 0.3, rx: 110, ry: 70 }] }] });
+}
+$('#sIcon').addEventListener('change', e => { setCfg('folderIcon', e.target.checked); if (e.target.checked) iconFailed.clear(); syncIcons(e.target.checked, false); });
+$('#sDate').addEventListener('change', e => setCfg('datePrefix', e.target.checked));
+$('#sOpen').addEventListener('change', e => setCfg('autoOpen', e.target.checked));
+$('#sRescan').addEventListener('change', e => setCfg('autoRescan', e.target.checked));
+
 /* ================= 通用 ================= */
 function closeAll(keepScrim) {
-  $('#modal').classList.remove('on'); $('#drawer').classList.remove('on'); $('#ann').classList.remove('on');
+  $('#modal').classList.remove('on'); $('#drawer').classList.remove('on'); $('#ann').classList.remove('on'); $('#imp').classList.remove('on'); $('#set').classList.remove('on');
   closeConfirm(); closePop();
   if (!keepScrim) { $('#scrim').classList.remove('on'); ui.openId = null; }
 }
@@ -634,6 +863,11 @@ document.addEventListener('click', e => {
   if (t.dataset.ann !== undefined) { openAnn(); return; }
   if (t.dataset.ast) { annStatus = t.dataset.ast; renderAnnOpts(); return; }
   if (t.dataset.unignore !== undefined) { ignored.clear(); saveIgnored(); scan(); toast('已恢复所有忽略的文件夹'); return; }
+  if (t.dataset.unmissing !== undefined) { const have = ui.live || new Set(); imports = imports.filter(x => have.has(x)); saveImports(); ui.missingN = 0; renderSide(); renderSetInfo(); toast('已取消登记读不到的工程，文件没有动'); return; }
+  if (t.id === 'openImport' || t.dataset.import !== undefined) { pickImport(); return; }
+  if (t.id === 'openSet') { openSet(); return; }
+  if (t.id === 'sLogoPick') { pickLogo(); return; }
+  if (t.id === 'sLogoReset') { resetLogo(); return; }
   if (t.dataset.amain) { setMainToe(t.dataset.amain); return; }
   if (t.dataset.st) { ui.status = t.dataset.st; render(); }
   else if (t.dataset.tag !== undefined) { ui.tag = ui.tag === t.dataset.tag ? '' : t.dataset.tag; render(); }
@@ -660,14 +894,15 @@ document.addEventListener('keydown', e => {
   if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r')) { e.preventDefault(); scan(); }
 });
 // 从 TD 切回来时重新扫一遍，刚保存的缩略图就能出现
-window.addEventListener('focus', () => { if (root) scan({ quiet: true }); });
+window.addEventListener('focus', () => { if (root && cfg.autoRescan) scan({ quiet: true }); });
 
 registerFx($('#bgfx'), { layers: [
   { S: 40, color: '#D0D0CA', seed: 3, keep: 0.88, linkP: 0.6, clusters: [{ x: 0.9, y: 0.88, rx: 280, ry: 210 }, { x: 0.25, y: 1.02, rx: 300, ry: 130 }] },
   { S: 40, color: '#A6A69F', seed: 6, keep: 0.9, linkP: 0.75, clusters: [{ x: 0.96, y: 0.07, rx: 130, ry: 110 }] }
 ] });
-new ResizeObserver(() => drawFx($('#bgfx'), fx.get($('#bgfx')), T)).observe($('#main'));
+new ResizeObserver(() => drawFx($('#bgfx'), fx.get($('#bgfx')))).observe($('#main'));
 
 syncRoot();
+loadLogo();
 render();
 scan();

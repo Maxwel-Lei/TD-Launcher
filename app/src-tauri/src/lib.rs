@@ -1,5 +1,5 @@
 //! TD 工程启动器 · 后端
-//! 只做"工程文件夹"这一层的事：扫描识别、新建、读写 project.json、打开、在文件夹中显示、删除（回收站）、移动。
+//! 只做"工程文件夹"这一层的事：扫描识别、新建、导入、读写 project.json、打开、在文件夹中显示、删除（回收站）、移动、文件夹图标。
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -44,7 +44,17 @@ struct Project {
     modified: u64,
     has_meta: bool,
     meta: Value,
+    /// 从根目录以外导入的工程：原地登记，文件留在原处（企划 §3）
+    external: bool,
+    /// 文件夹已经换上了启动器的图标
+    folder_icon: bool,
 }
+
+/// 导入的工程在侧栏"文件夹"里归到这一组
+const EXT_GROUP: &str = "外部导入";
+/// 文件夹图标：图标文件放在工程文件夹里，desktop.ini 用相对路径指向它，挪硬盘也不会丢
+const ICON_FILE: &str = ".td-folder.ico";
+const ICON_INI: &str = "[.ShellClassInfo]\r\nIconResource=.td-folder.ico,0\r\n";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -200,13 +210,80 @@ const MAX_DEPTH: usize = 4;
 const NESTED_DEPTH: usize = 3;
 
 #[tauri::command]
-fn scan_projects(root: String) -> Result<Vec<Project>, String> {
+fn scan_projects(root: String, extra: Option<Vec<String>>) -> Result<Vec<Project>, String> {
     let root = PathBuf::from(&root);
     fs::read_dir(&root).map_err(|e| format!("{}（{}）", e, root.display()))?;
     let mut out = Vec::new();
     scan_dir(&root, "", 1, &mut out);
+    // 导入的工程：不在根目录里，按登记的位置逐个读；找不到的（硬盘没插、被挪走）先跳过
+    for e in extra.unwrap_or_default() {
+        if let Some(p) = read_external(&root, Path::new(&e)) {
+            out.push(p);
+        }
+    }
     out.sort_by(|a, b| b.modified.cmp(&a.modified));
     Ok(out)
+}
+
+/// p 在 root 里面（或就是 root）
+fn inside(root: &Path, p: &Path) -> bool {
+    match (root.canonicalize(), p.canonicalize()) {
+        (Ok(r), Ok(d)) => d.starts_with(&r),
+        _ => false,
+    }
+}
+
+fn folder_name(dir: &Path) -> String {
+    dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| dir.to_string_lossy().to_string())
+}
+
+/// 读一个登记在根目录以外的工程；已经在根目录里的不重复算
+fn read_external(root: &Path, dir: &Path) -> Option<Project> {
+    if !dir.is_dir() || inside(root, dir) {
+        return None;
+    }
+    let mut p = read_project(dir, &folder_name(dir), EXT_GROUP)?;
+    p.external = true;
+    Some(p)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportScan {
+    /// 选的文件夹本来就在工程根目录里，不用导入
+    inside_root: bool,
+    projects: Vec<Project>,
+}
+
+/// 导入前先看一眼：选的文件夹本身是工程就返回它；不是就当上级文件夹，列出里面所有工程（批量导入）。
+/// 只读，不写任何东西。拖进来的是 .toe 文件时，看它所在的文件夹。
+#[tauri::command]
+fn inspect_import(root: String, path: String) -> Result<ImportScan, String> {
+    let mut dir = PathBuf::from(&path);
+    if dir.is_file() {
+        dir = dir.parent().map(Path::to_path_buf).ok_or("找不到这个文件所在的文件夹")?;
+    }
+    if !dir.is_dir() {
+        return Err(format!("不是文件夹：{}", path));
+    }
+    let root = PathBuf::from(&root);
+    if inside(&root, &dir) {
+        return Ok(ImportScan { inside_root: true, projects: vec![] });
+    }
+    let mut out = Vec::new();
+    if let Some(p) = read_project(&dir, &folder_name(&dir), EXT_GROUP) {
+        out.push(p);
+    } else {
+        scan_dir(&dir, "", 1, &mut out);
+        // 选的是根目录的上级时，根目录里的工程本来就在，不算导入
+        out.retain(|p| !inside(&root, Path::new(&p.path)));
+    }
+    for p in &mut out {
+        p.group = EXT_GROUP.to_string();
+        p.external = true;
+    }
+    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    Ok(ImportScan { inside_root: false, projects: out })
 }
 
 fn join_group(group: &str, folder: &str) -> String {
@@ -331,6 +408,8 @@ fn read_project(dir: &Path, folder: &str, group: &str) -> Option<Project> {
         modified,
         has_meta,
         meta: meta.unwrap_or(Value::Null),
+        external: false,
+        folder_icon: has_folder_icon(dir),
     })
 }
 
@@ -437,6 +516,15 @@ fn check_deletable(root: &Path, path: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// 检查 path 是一个工程文件夹（不要求在根目录里），给导入的工程用
+fn check_project(path: &Path) -> Result<PathBuf, String> {
+    let dir = path.canonicalize().map_err(|_| "工程文件夹不存在".to_string())?;
+    if !dir.is_dir() || (toes_in(&dir).is_empty() && !dir.join("project.json").is_file()) {
+        return Err("这个文件夹不像工程（没有 .toe 也没有 project.json），没有动它".into());
+    }
+    Ok(dir)
+}
+
 /// 删除工程：整个文件夹移到系统回收站，可以恢复
 #[tauri::command]
 fn delete_project(root: String, path: String) -> Result<(), String> {
@@ -452,8 +540,9 @@ fn plain(p: &Path) -> String {
 
 /// 把工程文件夹整个移到根目录下的另一个分类文件夹（dest 是相对根目录的路径，空 = 根目录本身）
 #[tauri::command]
-fn move_project(root: String, path: String, dest: String) -> Result<String, String> {
-    let dir = check_deletable(Path::new(&root), Path::new(&path))?;
+fn move_project(root: String, path: String, dest: String, external: Option<bool>) -> Result<String, String> {
+    // 导入的工程在根目录外面：移进分类文件夹就等于把它收进根目录
+    let dir = if external.unwrap_or(false) { check_project(Path::new(&path))? } else { check_deletable(Path::new(&root), Path::new(&path))? };
     let root_c = Path::new(&root).canonicalize().map_err(|_| "工程根目录不存在".to_string())?;
     let rel = dest.trim().trim_matches(['/', '\\']);
     let mut target_dir = root_c.clone();
@@ -484,6 +573,191 @@ fn move_project(root: String, path: String, dest: String) -> Result<String, Stri
         _ => e.to_string(),
     })?;
     Ok(plain(&target))
+}
+
+/* ---------------- 文件夹图标 ---------------- */
+
+/// 这个文件夹的图标是启动器换上的（图标文件在，desktop.ini 也指向它）
+fn has_folder_icon(dir: &Path) -> bool {
+    dir.join(ICON_FILE).is_file() && ini_is_ours(dir)
+}
+
+fn ini_is_ours(dir: &Path) -> bool {
+    fs::read(dir.join("desktop.ini")).map(|b| String::from_utf8_lossy(&b).contains(ICON_FILE)).unwrap_or(false)
+}
+
+/* ---------------- 自定义标志 ---------------- */
+
+/// 自定义标志存在软件的数据目录里（不在安装目录，重装、升级都不会丢）
+fn custom_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("custom"))
+}
+
+const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "svg", "gif", "bmp", "ico"];
+const IMAGE_MAX: u64 = 8 * 1024 * 1024;
+
+/// 读一张图片的原始内容给界面用（界面把它画到文件夹图标上）。只读图片格式，最大 8 MB
+#[tauri::command]
+fn read_image(path: String) -> Result<Vec<u8>, String> {
+    let p = Path::new(&path);
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return Err("只支持 PNG、JPG、WebP、SVG 这几种图片".into());
+    }
+    let len = fs::metadata(p).map_err(|e| e.to_string())?.len();
+    if len > IMAGE_MAX {
+        return Err("图片太大了（超过 8 MB），换一张小一点的".into());
+    }
+    fs::read(p).map_err(|e| e.to_string())
+}
+
+/// 把界面合成好的标志（logo.png）和文件夹图标（folder.ico）存进 dir；内容不对就不存
+fn write_custom_logo(dir: &Path, logo: &[u8], ico: &[u8]) -> Result<PathBuf, String> {
+    if !logo.starts_with(&[0x89, b'P', b'N', b'G']) || !ico.starts_with(&[0, 0, 1, 0]) || ico.len() < 22 {
+        return Err("标志文件格式不对，没有保存".into());
+    }
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("folder.ico"), ico).map_err(|e| e.to_string())?;
+    let png = dir.join("logo.png");
+    fs::write(&png, logo).map_err(|e| e.to_string())?;
+    Ok(png)
+}
+
+#[tauri::command]
+fn save_custom_logo(app: AppHandle, logo: Vec<u8>, ico: Vec<u8>) -> Result<String, String> {
+    let dir = custom_dir(&app).ok_or("找不到软件的数据目录")?;
+    write_custom_logo(&dir, &logo, &ico).map(|p| p.to_string_lossy().to_string())
+}
+
+/// 恢复默认标志
+#[tauri::command]
+fn clear_custom_logo(app: AppHandle) -> Result<(), String> {
+    let dir = custom_dir(&app).ok_or("找不到软件的数据目录")?;
+    for f in ["logo.png", "folder.ico"] {
+        let p = dir.join(f);
+        if p.is_file() {
+            fs::remove_file(&p).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// 当前的自定义标志（logo.png 的位置和修改时间）；没设过就是 None
+#[tauri::command]
+fn custom_logo(app: AppHandle) -> Option<(String, u64)> {
+    let p = custom_dir(&app)?.join("logo.png");
+    p.is_file().then(|| (p.to_string_lossy().to_string(), mtime(&p)))
+}
+
+/// 图标文件：先用自定义的；没有就用自带的（开发时在 src-tauri/resources/template/，打包后在安装目录的资源里）
+fn folder_ico(app: &AppHandle) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(d) = custom_dir(app) {
+        candidates.push(d.join("folder.ico"));
+    }
+    if let Ok(r) = app.path().resource_dir() {
+        candidates.push(r.join("resources").join("template").join("folder.ico"));
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("template").join("folder.ico"));
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+#[cfg(windows)]
+mod winattr {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    pub const READONLY: u32 = 0x1;
+    pub const HIDDEN: u32 = 0x2;
+    pub const SYSTEM: u32 = 0x4;
+    const INVALID: u32 = 0xFFFF_FFFF;
+    const SHCNE_UPDATEITEM: i32 = 0x0000_2000;
+    const SHCNF_PATHW: u32 = 0x0005;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileAttributesW(name: *const u16) -> u32;
+        fn SetFileAttributesW(name: *const u16, attrs: u32) -> i32;
+    }
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHChangeNotify(event: i32, flags: u32, item1: *const core::ffi::c_void, item2: *const core::ffi::c_void);
+    }
+
+    fn wide(p: &Path) -> Vec<u16> {
+        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    /// 加上 / 去掉几个属性位，其它属性不动
+    pub fn change(p: &Path, add: u32, remove: u32) {
+        let w = wide(p);
+        unsafe {
+            let cur = GetFileAttributesW(w.as_ptr());
+            if cur != INVALID {
+                SetFileAttributesW(w.as_ptr(), (cur | add) & !remove);
+            }
+        }
+    }
+
+    /// 告诉资源管理器这个文件夹变了，图标马上刷新
+    pub fn refresh(p: &Path) {
+        let w = wide(p);
+        unsafe { SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, w.as_ptr() as *const core::ffi::c_void, core::ptr::null()) }
+    }
+}
+#[cfg(not(windows))]
+mod winattr {
+    use std::path::Path;
+    pub const READONLY: u32 = 0x1;
+    pub const HIDDEN: u32 = 0x2;
+    pub const SYSTEM: u32 = 0x4;
+    pub fn change(_: &Path, _: u32, _: u32) {}
+    pub fn refresh(_: &Path) {}
+}
+
+/// 给工程文件夹换上 / 换回图标。只动两个隐藏文件（desktop.ini 和 .td-folder.ico），工程本身的文件不碰。
+/// 文件夹原来就有别人写的 desktop.ini 时不改它。
+fn apply_folder_icon(dir: &Path, ico: Option<&Path>, on: bool) -> Result<(), String> {
+    let ini = dir.join("desktop.ini");
+    let icon = dir.join(ICON_FILE);
+    if ini.is_file() && !ini_is_ours(dir) {
+        return Err("这个文件夹已经有自己的图标设置（desktop.ini），没有改动".into());
+    }
+    // 隐藏 + 系统属性的文件不能直接覆盖或删除，先去掉属性
+    for f in [&ini, &icon] {
+        if f.is_file() {
+            winattr::change(f, 0, winattr::HIDDEN | winattr::SYSTEM | winattr::READONLY);
+        }
+    }
+    if on {
+        let ico = ico.ok_or("安装目录里找不到图标文件 folder.ico")?;
+        fs::copy(ico, &icon).map_err(|e| e.to_string())?;
+        fs::write(&ini, ICON_INI).map_err(|e| e.to_string())?;
+        winattr::change(&icon, winattr::HIDDEN, winattr::READONLY);
+        winattr::change(&ini, winattr::HIDDEN | winattr::SYSTEM, 0);
+        // Windows 只对带"只读"标记的文件夹读 desktop.ini；这个标记对文件夹没有别的作用
+        winattr::change(dir, winattr::READONLY, 0);
+    } else {
+        if ini.is_file() {
+            fs::remove_file(&ini).map_err(|e| e.to_string())?;
+        }
+        if icon.is_file() {
+            fs::remove_file(&icon).map_err(|e| e.to_string())?;
+        }
+        winattr::change(dir, 0, winattr::READONLY);
+    }
+    winattr::refresh(dir);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_folder_icon(app: AppHandle, path: String, on: bool) -> Result<(), String> {
+    if !cfg!(windows) {
+        return Err("文件夹图标目前只支持 Windows".into());
+    }
+    // 去掉 \\?\ 前缀：资源管理器的刷新通知不认这种写法
+    let dir = PathBuf::from(plain(&check_project(Path::new(&path))?));
+    apply_folder_icon(&dir, folder_ico(&app).as_deref(), on)
 }
 
 #[cfg(test)]
@@ -547,7 +821,7 @@ mod tests {
         fs::write(nested.join("poster.toe"), b"x").unwrap();
         fs::write(nested.join("Backup").join("poster.3.toe"), b"x").unwrap();
 
-        let list = scan_projects(r.clone()).unwrap();
+        let list = scan_projects(r.clone(), None).unwrap();
         assert_eq!(list.len(), 3, "应只扫到 3 个工程");
         let n = list.iter().find(|p| p.folder == "海报").unwrap();
         assert_eq!(n.group, "01_商单/客户A");
@@ -585,7 +859,7 @@ mod tests {
     fn real_root() {
         let r = std::env::var("TDL_ROOT").unwrap_or(r"F:\Projects\Touchdesigner Projects".into());
         let t = std::time::Instant::now();
-        let list = scan_projects(r).unwrap();
+        let list = scan_projects(r, None).unwrap();
         println!("找到 {} 个工程，用时 {:?}", list.len(), t.elapsed());
         let mut groups: std::collections::BTreeMap<String, usize> = Default::default();
         for p in &list {
@@ -628,7 +902,7 @@ mod tests {
         // 不在第一层的 Library 照样扫
         mk("03_x/Library", &["lib.toe"]);
 
-        let list = scan_projects(root.to_string_lossy().to_string()).unwrap();
+        let list = scan_projects(root.to_string_lossy().to_string(), None).unwrap();
         let names: Vec<_> = list.iter().map(|p| format!("{}|{}", p.group, p.folder)).collect();
         assert_eq!(list.len(), 4, "{:?}", names);
         let skin = list.iter().find(|p| p.folder == "Skin").unwrap();
@@ -644,7 +918,7 @@ mod tests {
 
         // mainToe 指定主文件
         save_meta(skin.path.clone(), json!({"mainToe": "Other"})).unwrap();
-        let list = scan_projects(root.to_string_lossy().to_string()).unwrap();
+        let list = scan_projects(root.to_string_lossy().to_string(), None).unwrap();
         let skin = list.iter().find(|p| p.folder == "Skin").unwrap();
         assert!(skin.toe.as_ref().unwrap().contains("Other."));
 
@@ -662,18 +936,129 @@ mod tests {
         fs::create_dir_all(&p).unwrap();
         fs::write(p.join("a.toe"), b"x").unwrap();
         // 移进新建的分类文件夹
-        let np = move_project(r.clone(), p.to_string_lossy().into(), "01_商单/客户A".into()).unwrap();
+        let np = move_project(r.clone(), p.to_string_lossy().into(), "01_商单/客户A".into(), None).unwrap();
         assert!(root.join("01_商单/客户A/proj/a.toe").is_file());
         assert!(!p.exists());
         assert!(!np.starts_with(r"\\?\"));
         // 不能移进自己
-        assert!(move_project(r.clone(), np.clone(), "01_商单/客户A/proj/inner".into()).is_err());
+        assert!(move_project(r.clone(), np.clone(), "01_商单/客户A/proj/inner".into(), None).is_err());
         // 同名冲突
         fs::create_dir_all(root.join("proj")).unwrap();
-        assert!(move_project(r.clone(), np.clone(), "".into()).is_err());
+        assert!(move_project(r.clone(), np.clone(), "".into(), None).is_err());
         // 非法名字
-        assert!(move_project(r.clone(), np.clone(), "../外面".into()).is_err());
+        assert!(move_project(r.clone(), np.clone(), "../外面".into(), None).is_err());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn import_rules() {
+        let base = tmp("imp");
+        let root = base.join("root");
+        let outside = base.join("outside");
+        let mk = |d: PathBuf, files: &[&str]| {
+            fs::create_dir_all(&d).unwrap();
+            for f in files {
+                fs::write(d.join(f), b"x").unwrap();
+            }
+            d
+        };
+        mk(root.join("inroot"), &["a.toe"]);
+        let single = mk(outside.join("单个工程"), &["s.toe", "s.3.toe"]);
+        mk(outside.join("一批").join("甲"), &["j.toe"]);
+        mk(outside.join("一批").join("乙"), &["project.json"]);
+        mk(outside.join("一批").join("不是工程"), &["readme.txt"]);
+        mk(outside.join("一批").join("Backup"), &["old.1.toe"]);
+        let r = root.to_string_lossy().to_string();
+        let s = |p: &Path| p.to_string_lossy().to_string();
+
+        // 选的文件夹本身是工程
+        let one = inspect_import(r.clone(), s(&single)).unwrap();
+        assert!(!one.inside_root);
+        assert_eq!(one.projects.len(), 1);
+        assert!(one.projects[0].external);
+        assert_eq!(one.projects[0].group, EXT_GROUP);
+        assert_eq!(one.projects[0].path, s(&single));
+        // 拖进来的是 .toe 文件：看它所在的文件夹
+        assert_eq!(inspect_import(r.clone(), s(&single.join("s.toe"))).unwrap().projects.len(), 1);
+        // 选的是上级文件夹：列出里面的工程，跳过 Backup 和不是工程的
+        let many = inspect_import(r.clone(), s(&outside.join("一批"))).unwrap();
+        let mut names: Vec<_> = many.projects.iter().map(|p| p.folder.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["乙".to_string(), "甲".to_string()]);
+        // 已经在根目录里的不用导入；选根目录的上级时不把根目录里的工程算进去
+        assert!(inspect_import(r.clone(), s(&root.join("inroot"))).unwrap().inside_root);
+        let up = inspect_import(r.clone(), s(&base)).unwrap();
+        assert!(up.projects.iter().all(|p| p.folder != "inroot"), "根目录里的工程不该出现");
+        assert_eq!(up.projects.len(), 3);
+        // 检查没有写任何东西
+        assert!(!single.join("project.json").exists());
+
+        // 扫描：根目录 + 登记的外部工程；找不到的和根目录里的都不重复
+        let extra = vec![s(&single), s(&outside.join("不存在")), s(&root.join("inroot"))];
+        let list = scan_projects(r.clone(), Some(extra)).unwrap();
+        assert_eq!(list.len(), 2);
+        let e = list.iter().find(|p| p.external).unwrap();
+        assert_eq!(e.path, s(&single));
+        assert_eq!(e.group, EXT_GROUP);
+        assert!(!list.iter().find(|p| p.folder == "inroot").unwrap().external);
+
+        // 导入的工程不能当根目录里的删；移进分类文件夹要带 external
+        assert!(check_deletable(&root, &single).is_err());
+        assert!(move_project(r.clone(), s(&single), "01_商单".into(), None).is_err());
+        let np = move_project(r.clone(), s(&single), "01_商单".into(), Some(true)).unwrap();
+        assert!(root.join("01_商单").join("单个工程").join("s.toe").is_file());
+        assert!(!single.exists());
+        assert!(inside(&root, Path::new(&np)));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn folder_icon_files() {
+        let d = tmp("ico");
+        let ico = d.join("src.ico");
+        fs::write(&ico, b"ico").unwrap();
+        let p = d.join("proj");
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join("a.toe"), b"x").unwrap();
+        assert!(!has_folder_icon(&p));
+        // 没有图标文件时报错，不留半截
+        assert!(apply_folder_icon(&p, None, true).is_err());
+        assert!(!p.join("desktop.ini").exists());
+        apply_folder_icon(&p, Some(&ico), true).unwrap();
+        assert!(has_folder_icon(&p));
+        assert_eq!(fs::read_to_string(p.join("desktop.ini")).unwrap(), ICON_INI);
+        // 再设一次（覆盖带隐藏属性的文件）不出错
+        apply_folder_icon(&p, Some(&ico), true).unwrap();
+        apply_folder_icon(&p, None, false).unwrap();
+        assert!(!p.join("desktop.ini").exists() && !p.join(ICON_FILE).exists());
+        assert!(p.join("a.toe").is_file());
+        // 别人写的 desktop.ini 不动
+        fs::write(p.join("desktop.ini"), "[.ShellClassInfo]\r\nIconResource=other.ico,0\r\n").unwrap();
+        assert!(apply_folder_icon(&p, Some(&ico), true).is_err());
+        assert!(apply_folder_icon(&p, None, false).is_err());
+        assert!(fs::read_to_string(p.join("desktop.ini")).unwrap().contains("other.ico"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn custom_logo_files() {
+        let d = tmp("logo").join("custom");
+        let png = [0x89, b'P', b'N', b'G', 1, 2, 3];
+        let mut ico = vec![0u8, 0, 1, 0, 1, 0];
+        ico.extend_from_slice(&[0u8; 20]);
+        // 内容不对的不存，也不建文件夹
+        assert!(write_custom_logo(&d, b"not png", &ico).is_err());
+        assert!(write_custom_logo(&d, &png, b"not ico").is_err());
+        assert!(!d.exists());
+        let p = write_custom_logo(&d, &png, &ico).unwrap();
+        assert_eq!(fs::read(&p).unwrap(), png);
+        assert_eq!(fs::read(d.join("folder.ico")).unwrap(), ico);
+        // 只读图片
+        let txt = d.join("a.txt");
+        fs::write(&txt, b"x").unwrap();
+        assert!(read_image(txt.to_string_lossy().to_string()).is_err());
+        assert_eq!(read_image(p.to_string_lossy().to_string()).unwrap(), png);
+        let _ = fs::remove_dir_all(d.parent().unwrap());
     }
 
     #[test]
@@ -704,7 +1089,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![scan_projects, create_project, save_meta, open_project, reveal, delete_project, move_project])
+        .invoke_handler(tauri::generate_handler![scan_projects, inspect_import, create_project, save_meta, open_project, reveal, delete_project, move_project, set_folder_icon, read_image, save_custom_logo, clear_custom_logo, custom_logo])
         .run(tauri::generate_context!())
         .expect("启动失败");
 }
