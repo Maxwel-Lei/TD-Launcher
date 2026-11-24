@@ -41,6 +41,8 @@ struct Project {
     earliest: u64,
     thumb: Option<String>,
     thumb_mtime: u64,
+    /// 预览图不是 thumb.jpg 也不是用户指定的，而是软件在文件夹里自动找的一张现成的图
+    thumb_auto: bool,
     modified: u64,
     has_meta: bool,
     meta: Value,
@@ -271,15 +273,23 @@ fn inspect_import(root: String, path: String) -> Result<ImportScan, String> {
         return Ok(ImportScan { inside_root: true, projects: vec![] });
     }
     let mut out = Vec::new();
-    if let Some(p) = read_project(&dir, &folder_name(&dir), EXT_GROUP) {
+    // 分组：导入的工程按它原来所在的文件夹归类。
+    // 选的文件夹本身是工程 → 用它上一级文件夹的名字；选的是上级文件夹 → 用里面的分类文件夹，直接放在里面的用这个文件夹的名字
+    if let Some(mut p) = read_project(&dir, &folder_name(&dir), "") {
+        p.group = dir.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| EXT_GROUP.to_string());
         out.push(p);
     } else {
         scan_dir(&dir, "", 1, &mut out);
         // 选的是根目录的上级时，根目录里的工程本来就在，不算导入
         out.retain(|p| !inside(&root, Path::new(&p.path)));
+        let here = folder_name(&dir);
+        for p in &mut out {
+            if p.group.is_empty() {
+                p.group = here.clone();
+            }
+        }
     }
     for p in &mut out {
-        p.group = EXT_GROUP.to_string();
         p.external = true;
     }
     out.sort_by(|a, b| b.modified.cmp(&a.modified));
@@ -378,6 +388,8 @@ fn read_project(dir: &Path, folder: &str, group: &str) -> Option<Project> {
 
     let thumb = dir.join("thumb.jpg");
     let has_thumb = thumb.is_file();
+    let pref = meta.as_ref().and_then(|m| m.get("thumbFile")).and_then(|v| v.as_str()).map(String::from);
+    let (shown, thumb_auto) = resolve_thumb(dir, pref.as_deref());
     let name = meta
         .as_ref()
         .and_then(|m| m.get("name"))
@@ -403,14 +415,143 @@ fn read_project(dir: &Path, folder: &str, group: &str) -> Option<Project> {
         toe_bases: bases,
         confidence,
         earliest,
-        thumb: has_thumb.then(|| thumb.to_string_lossy().to_string()),
-        thumb_mtime: if has_thumb { mtime(&thumb) } else { 0 },
+        thumb_mtime: shown.as_ref().map(|p| mtime(p)).unwrap_or(0),
+        thumb: shown.map(|p| p.to_string_lossy().to_string()),
+        thumb_auto,
         modified,
         has_meta,
         meta: meta.unwrap_or(Value::Null),
         external: false,
         folder_icon: has_folder_icon(dir),
     })
+}
+
+/* ---------------- 预览图 ---------------- */
+
+const PREVIEW_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
+
+fn is_preview_image(name: &str) -> bool {
+    let l = name.to_lowercase();
+    !l.starts_with("._") && l != ICON_FILE && l.rsplit_once('.').map(|(_, e)| PREVIEW_EXTS.contains(&e)).unwrap_or(false)
+}
+
+/// 用哪张图当预览，以及它是不是自动找的。
+/// 顺序：用户在 project.json 里指定的（thumbFile）→ thumb.jpg（TD 保存时存的）→ 在文件夹里自动找一张现成的图。
+/// thumbFile 是 "-" 表示用户说过"不用预览图"，这时不自动找。
+fn resolve_thumb(dir: &Path, pref: Option<&str>) -> (Option<PathBuf>, bool) {
+    if let Some(f) = pref.filter(|f| !f.is_empty() && *f != "-") {
+        // 只认工程文件夹里面的相对路径
+        let rel = Path::new(f);
+        if rel.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
+            let p = dir.join(rel);
+            if p.is_file() && is_preview_image(&folder_name(&p)) {
+                return (Some(p), false);
+            }
+        }
+    }
+    let t = dir.join("thumb.jpg");
+    if t.is_file() {
+        return (Some(t), false);
+    }
+    if pref == Some("-") {
+        return (None, false);
+    }
+    let found = find_preview(dir);
+    let auto = found.is_some();
+    (found, auto)
+}
+
+/// 文件夹名加分 / 减分：导出、截图一类的更可能是成品画面，素材、贴图一类的多半不是
+fn preview_dir_bonus(lower: &str) -> i32 {
+    const GOOD: &[&str] = &["export", "exports", "output", "outputs", "render", "renders", "screenshots", "screenshot", "录制", "导出", "输出", "截图", "成品"];
+    const BAD: &[&str] = &["assets", "asset", "tex", "texture", "textures", "maps", "hdri", "images", "image", "素材", "贴图", "tdimportcache"];
+    if GOOD.contains(&lower) {
+        30
+    } else if BAD.contains(&lower) {
+        -30
+    } else {
+        0
+    }
+}
+
+/// 旧工程没有 thumb.jpg 时，在工程文件夹里找一张现成的图当预览：最多往下两层、最多看 600 个条目，不会拖慢扫描。
+/// 名字像截图 / 预览 / TD 导出的、放在导出文件夹里的优先，同分取最近修改的。只读，不往文件夹里写东西。
+fn find_preview(dir: &Path) -> Option<PathBuf> {
+    const KEYS: &[&str] = &["thumb", "preview", "cover", "screenshot", "截图", "预览", "封面", "效果"];
+    let mut budget = 600usize;
+    let mut best: Option<(i32, u64, PathBuf)> = None;
+    let mut queue = std::collections::VecDeque::from([(dir.to_path_buf(), 0usize, 0i32)]);
+    while let Some((d, depth, bonus)) = queue.pop_front() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            if budget == 0 {
+                return best.map(|b| b.2);
+            }
+            budget -= 1;
+            let name = e.file_name().to_string_lossy().to_string();
+            let lower = name.to_lowercase();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if depth < 2 && !skip_dir(&name, false) {
+                    queue.push_back((e.path(), depth + 1, bonus + preview_dir_bonus(&lower)));
+                }
+                continue;
+            }
+            if !ft.is_file() || !is_preview_image(&name) {
+                continue;
+            }
+            // 太小的多半是图标，太大的加载慢
+            let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+            if !(8 * 1024..=40 * 1024 * 1024).contains(&len) {
+                continue;
+            }
+            let mut score = bonus + if depth == 0 { 20 } else { 0 };
+            if KEYS.iter().any(|k| lower.contains(k)) {
+                score += 50;
+            }
+            if lower.starts_with("tdmovieout") {
+                score += 40;
+            }
+            let p = e.path();
+            let mt = mtime(&p);
+            if best.as_ref().map(|(s, m, _)| (score, mt) > (*s, *m)).unwrap_or(true) {
+                best = Some((score, mt, p));
+            }
+        }
+    }
+    best.map(|b| b.2)
+}
+
+/// 用户自己定预览图。file：None = 不用预览图；"" = 恢复自动；其它 = 一张图片的位置。
+/// 图片在工程文件夹里就只记相对位置；在外面就复制进来（thumb-custom.扩展名）。记在 project.json 的 thumbFile 里
+fn set_thumb_at(dir: &Path, file: Option<&str>) -> Result<(), String> {
+    let val = match file {
+        None => "-".to_string(),
+        Some("") => String::new(),
+        Some(f) => {
+            let src = Path::new(f);
+            if !src.is_file() || !is_preview_image(&folder_name(src)) {
+                return Err("要选一张图片（JPG、PNG、WebP、BMP、GIF）".into());
+            }
+            let (s, d) = (src.canonicalize().map_err(|e| e.to_string())?, dir.canonicalize().map_err(|e| e.to_string())?);
+            match s.strip_prefix(&d) {
+                Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+                Err(_) => {
+                    let ext = folder_name(src).rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+                    let name = format!("thumb-custom.{}", ext);
+                    fs::copy(src, dir.join(&name)).map_err(|e| e.to_string())?;
+                    name
+                }
+            }
+        }
+    };
+    save_meta(dir.to_string_lossy().to_string(), json!({ "thumbFile": val }))
+}
+
+#[tauri::command]
+fn set_thumb(path: String, file: Option<String>) -> Result<(), String> {
+    let dir = PathBuf::from(plain(&check_project(Path::new(&path))?));
+    set_thumb_at(&dir, file.as_deref())
 }
 
 /// 模板 .toe：开发时在 src-tauri/resources/template/，打包后在安装目录的资源里
@@ -1261,7 +1402,7 @@ mod tests {
         assert!(!one.inside_root);
         assert_eq!(one.projects.len(), 1);
         assert!(one.projects[0].external);
-        assert_eq!(one.projects[0].group, EXT_GROUP);
+        assert_eq!(one.projects[0].group, "outside", "单个导入：按上一级文件夹分组");
         assert_eq!(one.projects[0].path, s(&single));
         // 拖进来的是 .toe 文件：看它所在的文件夹
         assert_eq!(inspect_import(r.clone(), s(&single.join("s.toe"))).unwrap().projects.len(), 1);
@@ -1270,11 +1411,15 @@ mod tests {
         let mut names: Vec<_> = many.projects.iter().map(|p| p.folder.clone()).collect();
         names.sort();
         assert_eq!(names, vec!["乙".to_string(), "甲".to_string()]);
+        assert!(many.projects.iter().all(|p| p.group == "一批" && p.external), "直接放在所选文件夹里的：按这个文件夹分组");
         // 已经在根目录里的不用导入；选根目录的上级时不把根目录里的工程算进去
         assert!(inspect_import(r.clone(), s(&root.join("inroot"))).unwrap().inside_root);
         let up = inspect_import(r.clone(), s(&base)).unwrap();
         assert!(up.projects.iter().all(|p| p.folder != "inroot"), "根目录里的工程不该出现");
         assert_eq!(up.projects.len(), 3);
+        // 选上级文件夹：按里面的分类文件夹分组（带上各级）
+        assert_eq!(up.projects.iter().find(|p| p.folder == "甲").unwrap().group, "outside/一批");
+        assert_eq!(up.projects.iter().find(|p| p.folder == "单个工程").unwrap().group, "outside");
         // 检查没有写任何东西
         assert!(!single.join("project.json").exists());
 
@@ -1405,6 +1550,61 @@ mod tests {
     }
 
     #[test]
+    fn preview_images() {
+        let base = tmp("prev");
+        let p = base.join("旧工程");
+        let big = vec![7u8; 20 * 1024];
+        let mk = |rel: &str, data: &[u8]| {
+            let f = p.join(rel);
+            fs::create_dir_all(f.parent().unwrap()).unwrap();
+            fs::write(&f, data).unwrap();
+            f
+        };
+        mk("old.toe", b"x");
+        // 没有任何图：没有预览
+        assert_eq!(resolve_thumb(&p, None), (None, false));
+        mk("icon.png", b"tiny"); // 太小，不算
+        mk("assets/tex/wood.png", &big); // 素材贴图，减分
+        mk("a/b/c/deep.png", &big); // 太深，不找
+        mk("Backup/old.png", &big); // Backup 不找
+        let (got, auto) = resolve_thumb(&p, None);
+        assert!(auto && got.unwrap().ends_with("wood.png"), "只有贴图时也用它，总比没有强");
+        let out = mk("export/final.png", &big);
+        assert_eq!(resolve_thumb(&p, None), (Some(out), true), "导出文件夹里的优先于素材");
+        let shot = mk("TDMovieOut.0.jpg", &big);
+        assert_eq!(resolve_thumb(&p, None), (Some(shot), true), "TD 导出的截图最优先");
+        // 扫描结果里带上
+        let pr = read_project(&p, "旧工程", "").unwrap();
+        assert!(pr.thumb_auto && pr.thumb.unwrap().ends_with("TDMovieOut.0.jpg"));
+        assert!(!p.join("project.json").exists() && !p.join("thumb.jpg").exists(), "自动找图不往文件夹里写东西");
+
+        // 用户说不用：不再自动找
+        set_thumb_at(&p, None).unwrap();
+        assert_eq!(resolve_thumb(&p, Some("-")), (None, false));
+        assert!(read_project(&p, "旧工程", "").unwrap().thumb.is_none());
+        // 用户选文件夹里的一张：记相对位置
+        set_thumb_at(&p, Some(&p.join("assets/tex/wood.png").to_string_lossy())).unwrap();
+        let pr = read_project(&p, "旧工程", "").unwrap();
+        assert_eq!(pr.meta["thumbFile"], "assets/tex/wood.png");
+        assert!(!pr.thumb_auto && pr.thumb.unwrap().ends_with("wood.png"));
+        // 选文件夹外面的一张：复制进来
+        let outside = base.join("别处.PNG");
+        fs::write(&outside, &big).unwrap();
+        set_thumb_at(&p, Some(&outside.to_string_lossy())).unwrap();
+        assert!(p.join("thumb-custom.png").is_file());
+        assert_eq!(read_project(&p, "旧工程", "").unwrap().meta["thumbFile"], "thumb-custom.png");
+        // 不是图片 / 想指到文件夹外面：不认
+        assert!(set_thumb_at(&p, Some(&p.join("old.toe").to_string_lossy())).is_err());
+        assert_eq!(resolve_thumb(&p, Some("../别处.PNG")).1, true, "越界的 thumbFile 当没写，回到自动找");
+        // 恢复自动；之后 TD 存了 thumb.jpg 就用它
+        set_thumb_at(&p, Some("")).unwrap();
+        assert!(read_project(&p, "旧工程", "").unwrap().thumb_auto);
+        let tj = mk("thumb.jpg", &big);
+        assert_eq!(resolve_thumb(&p, Some("")), (Some(tj), false));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn user_theme_files() {
         let d = tmp("themes");
         assert!(read_user_themes(&d.join("没有这个文件夹")).is_empty());
@@ -1458,9 +1658,17 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 不能多开（单实例）：已经开着时再点图标，不开第二个窗口，而是把已有的窗口叫到前面。这个插件要第一个注册
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![scan_projects, inspect_import, list_templates, open_templates_dir, save_as_template, create_project, save_meta, open_project, reveal, delete_project, move_project, set_folder_icon, read_image, save_custom_logo, clear_custom_logo, custom_logo, list_user_themes, open_themes_dir])
+        .invoke_handler(tauri::generate_handler![scan_projects, inspect_import, set_thumb, list_templates, open_templates_dir, save_as_template, create_project, save_meta, open_project, reveal, delete_project, move_project, set_folder_icon, read_image, save_custom_logo, clear_custom_logo, custom_logo, list_user_themes, open_themes_dir])
         .run(tauri::generate_context!())
         .expect("启动失败");
 }

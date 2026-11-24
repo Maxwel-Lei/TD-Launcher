@@ -141,10 +141,18 @@ async function loadThemes() {
 }
 
 // 导入的工程：不在根目录里，只登记它们的位置，文件留在原处（企划 §3）
+// 每条记录 { path, group }：group 是它原来所在的分类文件夹，卡片墙和侧栏按它分组
+const normPath = p => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+const parentName = p => { const a = String(p).replace(/[\\/]+$/, '').split(/[\\/]/); return a.length > 1 ? a[a.length - 2] : ''; };
 let imports = [];
-try { imports = JSON.parse(localStorage.getItem('imports') || '[]').filter(x => typeof x === 'string'); } catch (e) { imports = []; }
+try {
+  // 早期版本只存了位置（字符串）：按它上一级文件夹的名字补上分组
+  imports = JSON.parse(localStorage.getItem('imports') || '[]')
+    .map(x => (typeof x === 'string' ? { path: x, group: parentName(x) } : x))
+    .filter(x => x && typeof x.path === 'string');
+} catch (e) { imports = []; }
 function saveImports() { try { localStorage.setItem('imports', JSON.stringify(imports)); } catch (e) {} }
-function dropImport(path) { imports = imports.filter(x => x !== path); saveImports(); }
+function dropImport(path) { imports = imports.filter(x => x.path !== path); saveImports(); }
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -166,6 +174,10 @@ function normalize(raw) {
     thumbMtime: raw.thumbMtime,
     modified: raw.modified,
     hasMeta: raw.hasMeta,
+    // 有 project.json 但里面只记了预览图之类的，还不算标注过
+    annotated: raw.hasMeta && !!(m.name || m.status || (Array.isArray(m.tags) && m.tags.length) || m.created),
+    thumbAuto: !!raw.thumbAuto,
+    thumbPref: typeof m.thumbFile === 'string' ? m.thumbFile : '',
     confidence: raw.confidence || 'maybe',
     external: !!raw.external,
     folderIcon: !!raw.folderIcon,
@@ -193,11 +205,16 @@ async function scan({ quiet = false } = {}) {
   const seq = ++scanSeq;
   const slow = quiet ? null : setTimeout(() => { ui.scanning = true; renderView(); }, 180);
   try {
-    const list = await invoke('scan_projects', { root, extra: imports });
+    // 导入之后换过根目录、现在已经在根目录里面的：不用再登记，直接归根目录管
+    const r = normPath(root) + '/', kept = imports.filter(x => !normPath(x.path).startsWith(r));
+    if (kept.length !== imports.length) { imports = kept; saveImports(); }
+    const list = await invoke('scan_projects', { root, extra: imports.map(x => x.path) });
     if (seq !== scanSeq) return;
     loadIgnored();
+    // 导入的工程按它原来所在的文件夹分组
+    for (const p of list) if (p.external) { const rec = imports.find(x => x.path === p.path); p.group = (rec && rec.group) || '外部导入'; }
     ui.live = new Set(list.map(p => p.path));
-    ui.missingN = imports.filter(x => !ui.live.has(x)).length;
+    ui.missingN = imports.filter(x => !ui.live.has(x.path)).length;
     ui.ignoredN = list.filter(p => ignored.has(p.path)).length;
     projects = list.filter(p => !ignored.has(p.path)).map(normalize);
     ui.error = '';
@@ -284,7 +301,7 @@ function renderSide() {
 function cardHTML(p) {
   const th = thumbSrc(p);
   return `<div class="card-wrap${ui.sel.has(p.id) ? ' sel' : ''}" data-id="${esc(p.id)}"><button class="pick" type="button" data-pick="${esc(p.id)}" aria-pressed="${ui.sel.has(p.id)}" aria-label="选择 ${esc(p.name)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"><path d="M4 12.5l5 5L20 6.5"/></svg></button><button class="card cut" type="button" data-open="${esc(p.id)}">
-    <div class="thumb${th ? '' : ' empty'}">${th ? `<img src="${th}" alt="" loading="lazy">` : `<div class="hint"><b>还没有缩略图</b>${p.toe ? '用 TD 打开并保存一次即可生成' : '这个文件夹里还没有 .toe'}</div>`}</div>
+    <div class="thumb${th ? '' : ' empty'}">${th ? `<img src="${th}" alt="" loading="lazy">` : `<div class="hint"><b>还没有预览图</b>${p.toe ? '用 TD 打开并保存一次即可生成，或在详情里选一张图' : '这个文件夹里还没有 .toe'}</div>`}</div>
     <div class="info">
       <div class="r1"><span class="name" title="${esc(p.name)}">${esc(p.name)}</span>${p.external ? '<span class="ext" title="文件在工程根目录外面，留在原处">外部</span>' : ''}<span class="date">${esc(p.created)}</span></div>
       <div class="r2"><i class="ico ${ICON[p.status]}"></i><span class="st">${p.status}</span><span class="sep">/</span><span class="tg">${p.tags.map(esc).join(' · ') || '无标签'}</span></div>
@@ -323,7 +340,7 @@ function renderView() {
       if (names.length > 1) { secs = names.map(g => [g, list.filter(p => topGroup(p) === g)]); list = secs.flatMap(s => s[1]); }
     }
     ui.visible = list.map(p => p.id);
-    const un = projects.filter(p => !p.hasMeta).length;
+    const un = projects.filter(p => !p.annotated).length;
     const annbar = un && (ui.status === '全部' || ui.status === '未标注') ? `<div class="annbar cut"><i class="ico s4"></i><span>有 <b>${un}</b> 个工程还没有 project.json，可以一次补上标注</span><button class="btn text" type="button" data-ann>识别并补标注</button></div>` : '';
     let head = ui.status === '全部' ? '全部工程' : ui.status; if (ui.tag) head += ' · ' + ui.tag; if (ui.group !== null) head += ' · ' + (ui.group || '根目录');
     v.innerHTML = `<div class="main-h"><div><span class="label">Projects</span><h1>${esc(head)}</h1></div>
@@ -418,7 +435,10 @@ function refreshDetailHead(p) {
   $('#dPath').title = p.external ? '外部导入：文件在工程根目录外面，留在原处' : p.group ? '分类：' + p.group : '';
   $('#dDel').textContent = p.external ? '从启动器移除' : '删除工程';
   $('#dDel').nextElementSibling.textContent = p.external ? '只是不再显示，文件夹和文件都不动' : '整个文件夹移到回收站，可以恢复';
-  $('#dMeta').textContent = `创建于 ${p.created || '未知'} · ${th ? '缩略图更新于 ' + fmtTime(p.thumbMtime) : '还没有缩略图'}${p.toe ? '' : ' · 没有 .toe'}`;
+  $('#dMeta').textContent = `创建于 ${p.created || '未知'} · ${th ? (p.thumbAuto ? '预览图是自动找的：' + baseName(p.thumb) : '预览图更新于 ' + fmtTime(p.thumbMtime)) : p.thumbPref === '-' ? '不显示预览图' : '还没有预览图'}${p.toe ? '' : ' · 没有 .toe'}`;
+  $('#dThumbActs').innerHTML = `<button class="btn text" type="button" data-thumb="pick">换预览图…</button>` +
+    (p.thumbAuto ? '<button class="btn text" type="button" data-thumb="none">不用这张</button>' : '') +
+    (p.thumbPref ? '<button class="btn text" type="button" data-thumb="auto">恢复自动</button>' : '');
   $('#dOpen').disabled = !p.toe;
   const many = p.toeBases.length > 1;
   $('#dMainWrap').hidden = !many;
@@ -479,6 +499,19 @@ $('#cYes').addEventListener('click', async () => {
   $('#cYes').disabled = true;
   try { await f(); } finally { $('#cYes').disabled = false; closeConfirm(); }
 });
+
+// 预览图：旧工程没有 thumb.jpg 时软件会在文件夹里自动找一张；这里可以自己换、不用、或恢复自动
+async function setThumb(kind) {
+  const p = cur(); if (!p) return;
+  let file = kind === 'none' ? null : '';
+  if (kind === 'pick') {
+    const f = await dialog.open({ multiple: false, title: '选一张图当预览', defaultPath: p.path, filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] }] });
+    if (!f) return;
+    file = Array.isArray(f) ? f[0] : f;
+  }
+  try { await invoke('set_thumb', { path: p.path, file }); await scan({ quiet: true }); toast(kind === 'pick' ? '预览图已更换' : kind === 'none' ? '已不显示预览图' : '已恢复自动'); }
+  catch (e) { toast('没换成：' + e); }
+}
 
 // 把这个工程存成模板：只存文件夹结构和最新的 .toe
 $('#dTpl').addEventListener('click', () => {
@@ -673,7 +706,7 @@ function askBatchMove(dest) {
 const groupTag = p => { const g = topGroup(p); return g ? (g.replace(/^\d+[\s_.\-]*/, '') || g) : ''; };
 let annStatus = '已完成';
 function openAnn() {
-  const list = projects.filter(p => !p.hasMeta);
+  const list = projects.filter(p => !p.annotated);
   if (!list.length) { toast('所有工程都已经有标注了'); return; }
   closeAll(); clearSel();
   const row = p => `<div class="ann-row" data-aid="${esc(p.id)}">
@@ -789,7 +822,7 @@ async function doImport(items, notes) {
     try {
       // 还没有标注的：新增一个 project.json；已有的原样不动
       if (!p.hasMeta) await invoke('save_meta', { path: p.path, meta: { name, tags: [], status: '', client: '', note: '', created } });
-      if (!imports.includes(p.path)) imports.push(p.path);
+      if (!imports.some(x => x.path === p.path)) imports.push({ path: p.path, group: p.group || parentName(p.path) });
       if (ignored.delete(p.path)) saveIgnored();
       n++;
     } catch (e) { bad.push(`「${p.name}」${e}`); }
@@ -929,7 +962,7 @@ async function resetLogo() {
 function renderSetInfo() {
   const n = projects.filter(p => p.external).length;
   $('#sImports').innerHTML = imports.length
-    ? `登记了 ${imports.length} 个根目录以外的工程${ui.missingN ? `，其中 ${ui.missingN} 个现在读不到 · <button type="button" data-unmissing>不再登记读不到的</button>` : ''}。它们的文件留在原处，侧栏"文件夹"里的"外部导入"可以单独看这 ${n} 个。`
+    ? `登记了 ${imports.length} 个根目录以外的工程${ui.missingN ? `，其中 ${ui.missingN} 个现在读不到 · <button type="button" data-unmissing>不再登记读不到的</button>` : ''}。它们的文件留在原处，卡片上标着"外部"，按原来所在的文件夹分组（现在读得到 ${n} 个）。`
     : '还没有导入过根目录以外的工程。点右上角"导入"，或者把工程文件夹拖进窗口。';
 }
 const MODES = [['light', '浅色'], ['dark', '深色'], ['auto', '跟随系统']];
@@ -991,13 +1024,14 @@ document.addEventListener('click', e => {
   if (t.dataset.ann !== undefined) { openAnn(); return; }
   if (t.dataset.ast) { annStatus = t.dataset.ast; renderAnnOpts(); return; }
   if (t.dataset.unignore !== undefined) { ignored.clear(); saveIgnored(); scan(); toast('已恢复所有忽略的文件夹'); return; }
-  if (t.dataset.unmissing !== undefined) { const have = ui.live || new Set(); imports = imports.filter(x => have.has(x)); saveImports(); ui.missingN = 0; renderSide(); renderSetInfo(); toast('已取消登记读不到的工程，文件没有动'); return; }
+  if (t.dataset.unmissing !== undefined) { const have = ui.live || new Set(); imports = imports.filter(x => have.has(x.path)); saveImports(); ui.missingN = 0; renderSide(); renderSetInfo(); toast('已取消登记读不到的工程，文件没有动'); return; }
   if (t.id === 'openImport' || t.dataset.import !== undefined) { pickImport(); return; }
   if (t.id === 'openSet') { openSet(); return; }
   if (t.dataset.themeId !== undefined) { setTheme(t.dataset.themeId); return; }
   if (t.dataset.themeMode) { setThemeMode(t.dataset.themeMode); return; }
   if (t.id === 'sThemeDir') { openThemesDir(); return; }
   if (t.dataset.tpl !== undefined) { setTpl(t.dataset.tpl); return; }
+  if (t.dataset.thumb) { setThumb(t.dataset.thumb); return; }
   if (t.id === 'npTplDir') { invoke('open_templates_dir').then(() => toast('模板文件夹已打开：每个文件夹就是一个模板，里面有说明')).catch(e => toast('打不开模板文件夹：' + e)); return; }
   if (t.id === 'sThemeReload') { reloadThemes(); return; }
   if (t.id === 'sLogoPick') { pickLogo(); return; }
