@@ -35,6 +35,13 @@ const flag = (k, d) => { const v = localStorage.getItem(k); return v === null ? 
 const cfg = { folderIcon: flag('folderIcon', false), datePrefix: flag('datePrefix', true), autoOpen: flag('autoOpen', true), autoRescan: flag('autoRescan', true), groupByFolder: flag('groupByFolder', true) };
 function setCfg(k, v) { cfg[k] = v; try { localStorage.setItem(k, v ? '1' : '0'); } catch (e) {} }
 
+// 主题：只换颜色（和左上角的标志）。logo 是这个主题自带的标志图，没有就用默认的
+const THEMES = [{ id: '', name: '默认', sub: '黑白灰' }, { id: 'yu', name: '玉', sub: '青玉色 · 深色', logo: new URL('themes/yu.svg', document.currentScript.src).href }];
+let theme = localStorage.getItem('theme') || '';
+if (!THEMES.some(t => t.id === theme)) theme = '';
+function applyTheme() { if (theme) document.documentElement.dataset.theme = theme; else delete document.documentElement.dataset.theme; }
+applyTheme();
+
 // 导入的工程：不在根目录里，只登记它们的位置，文件留在原处（企划 §3）
 let imports = [];
 try { imports = JSON.parse(localStorage.getItem('imports') || '[]').filter(x => typeof x === 'string'); } catch (e) { imports = []; }
@@ -285,7 +292,7 @@ const cur = () => projects.find(x => x.id === ui.openId);
 function refreshDetailHead(p) {
   const th = thumbSrc(p);
   $('#dThumb').innerHTML = th ? `<img src="${th}" alt="${esc(p.name)} 的缩略图">` : '';
-  $('#dThumb').style.background = th ? '#161616' : 'var(--bg1)';
+  $('#dThumb').style.background = th ? 'var(--thumb)' : 'var(--bg1)';
   $('#dName').textContent = p.name;
   $('#dPath').textContent = shortPath(p.path);
   $('#dPath').title = p.external ? '外部导入：文件在工程根目录外面，留在原处' : p.group ? '分类：' + p.group : '';
@@ -729,9 +736,11 @@ let customLogo = null; // { path, src }：正在用的自定义标志
 function showLogo(info) {
   customLogo = info;
   const svg = document.querySelector('header svg.logo'); let img = document.querySelector('header img.logo');
-  if (info) {
+  // 优先级：自己选的标志 > 主题自带的标志 > 默认标志
+  const th = THEMES.find(t => t.id === theme), src = info ? info.src : th && th.logo ? th.logo : '';
+  if (src) {
     if (!img) { img = document.createElement('img'); img.className = 'logo'; img.alt = ''; svg.after(img); }
-    img.src = info.src; svg.style.display = 'none';
+    img.src = src; svg.style.display = 'none';
   } else { if (img) img.remove(); svg.style.display = ''; }
 }
 async function loadLogo() {
@@ -788,8 +797,15 @@ function renderSetInfo() {
     ? `登记了 ${imports.length} 个根目录以外的工程${ui.missingN ? `，其中 ${ui.missingN} 个现在读不到 · <button type="button" data-unmissing>不再登记读不到的</button>` : ''}。它们的文件留在原处，侧栏"文件夹"里的"外部导入"可以单独看这 ${n} 个。`
     : '还没有导入过根目录以外的工程。点右上角"导入"，或者把工程文件夹拖进窗口。';
 }
+function renderThemes() {
+  $('#sTheme').innerHTML = THEMES.map(t => `<button type="button" data-theme-id="${t.id}" aria-pressed="${t.id === theme}">${t.name}<small style="margin-left:8px;opacity:.7;font-weight:400">${t.sub}</small></button>`).join('');
+}
+function setTheme(id) {
+  theme = id; try { localStorage.setItem('theme', id); } catch (e) {}
+  applyTheme(); showLogo(customLogo); renderThemes();
+}
 function openSet() {
-  closeAll(); syncRoot();
+  closeAll(); syncRoot(); renderThemes();
   $('#sIcon').checked = cfg.folderIcon && IS_WIN; $('#sIcon').disabled = !IS_WIN;
   $('#sIconRow').classList.toggle('off', !IS_WIN);
   if (!IS_WIN) $('#sIconRow').title = '目前只支持 Windows';
@@ -829,6 +845,7 @@ document.addEventListener('click', e => {
   if (t.dataset.unmissing !== undefined) { const have = ui.live || new Set(); imports = imports.filter(x => have.has(x)); saveImports(); ui.missingN = 0; renderSide(); renderSetInfo(); toast('已取消登记读不到的工程，文件没有动'); return; }
   if (t.id === 'openImport' || t.dataset.import !== undefined) { pickImport(); return; }
   if (t.id === 'openSet') { openSet(); return; }
+  if (t.dataset.themeId !== undefined) { setTheme(t.dataset.themeId); return; }
   if (t.id === 'sLogoPick') { pickLogo(); return; }
   if (t.id === 'sLogoReset') { resetLogo(); return; }
   if (t.dataset.amain) { setMainToe(t.dataset.amain); return; }
