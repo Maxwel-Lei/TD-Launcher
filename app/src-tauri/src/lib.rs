@@ -111,25 +111,14 @@ fn system_junk(name: &str) -> Option<&'static str> {
     SYSTEM_JUNK.iter().find(|(n, _)| *n == l).map(|(_, os)| *os)
 }
 
-/// 去掉 "00_"、"99-" 这类数字前缀
-fn strip_num_prefix(name: &str) -> &str {
-    let t = name.trim_start_matches(|c: char| c.is_ascii_digit());
-    if t.len() < name.len() {
-        t.trim_start_matches(['_', '-', ' ', '.'])
-    } else {
-        name
-    }
-}
-
 /// 扫描时整个跳过的文件夹；top 表示它直接在根目录下
-fn skip_dir(name: &str, top: bool) -> bool {
+fn skip_dir(name: &str, _top: bool) -> bool {
     let l = name.to_lowercase();
     l.starts_with('.')
         || l.starts_with('_')
         || l == "backup"
         || l == "node_modules"
         || system_junk(name).is_some()
-        || (top && strip_num_prefix(&l) == "library")
 }
 
 /// 算数的 .toe：排除 Mac 影子文件和崩溃自动存档
@@ -1340,12 +1329,12 @@ mod tests {
         mk("loose", &["a.toe"]);
         // 只剩 Backup → 不算
         mk("only_backup/Backup", &["x.3.toe"]);
-        // Mac 影子文件 / __MACOSX / _开头 / 第一层库文件夹 → 都不算
+        // Mac 影子文件 / __MACOSX / _开头 → 都不算
         mk("mac_zip", &["._ghost.toe"]);
         mk("mac_zip/__MACOSX/inner", &["._a.toe"]);
         mk("_to_delete/old", &["old.toe"]);
+        // 库文件夹和别的分类一样对待
         mk("00_Library/Mediapipe", &["m.toe"]);
-        // 不在第一层的 Library 照样扫
         mk("03_x/Library", &["lib.toe"]);
         // 分类文件夹里的工程，.toe 分散在几个子文件夹：算一个工程，用最近保存的那个子文件夹
         mk("03_x/多版本/v1", &["a.toe"]);
@@ -1354,7 +1343,8 @@ mod tests {
 
         let list = scan_projects(root.to_string_lossy().to_string(), None).unwrap();
         let names: Vec<_> = list.iter().map(|p| format!("{}|{}", p.group, p.folder)).collect();
-        assert_eq!(list.len(), 4, "{:?}", names);
+        assert_eq!(list.len(), 5, "{:?}", names);
+        assert_eq!(list.iter().find(|p| p.folder == "Mediapipe").unwrap().group, "00_Library");
         assert!(list.iter().all(|p| p.folder != "2026-11-17_Sub" && p.folder != "v1" && p.folder != "v2" && p.folder != "空文件夹"), "{:?}", names);
         let multi = list.iter().find(|p| p.folder == "多版本").unwrap();
         assert_eq!(multi.group, "03_x");
