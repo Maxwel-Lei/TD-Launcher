@@ -206,17 +206,15 @@ fn has_signature(subs: &[String]) -> bool {
     n(&td) >= 2 || n(&tpl) >= 2
 }
 
-/// 分类文件夹最多往下找几层（例如 根目录/01_商单/客户A/工程）
-const MAX_DEPTH: usize = 4;
-/// 工程里面再往下找几层带 project.json 的子工程
-const NESTED_DEPTH: usize = 3;
+/// 工程的 .toe 不在文件夹第一层时，最多往下找几层
+const TOE_DEPTH: usize = 3;
 
 #[tauri::command]
 fn scan_projects(root: String, extra: Option<Vec<String>>) -> Result<Vec<Project>, String> {
     let root = PathBuf::from(&root);
     fs::read_dir(&root).map_err(|e| format!("{}（{}）", e, root.display()))?;
     let mut out = Vec::new();
-    scan_dir(&root, "", 1, &mut out);
+    scan_root(&root, &mut out);
     // 导入的工程：不在根目录里，按登记的位置逐个读；找不到的（硬盘没插、被挪走）先跳过
     for e in extra.unwrap_or_default() {
         if let Some(p) = read_external(&root, Path::new(&e)) {
@@ -244,7 +242,7 @@ fn read_external(root: &Path, dir: &Path) -> Option<Project> {
     if !dir.is_dir() || inside(root, dir) {
         return None;
     }
-    let mut p = read_project(dir, &folder_name(dir), EXT_GROUP)?;
+    let mut p = read_project_ex(dir, &folder_name(dir), EXT_GROUP, true)?;
     p.external = true;
     Some(p)
 }
@@ -274,18 +272,20 @@ fn inspect_import(root: String, path: String) -> Result<ImportScan, String> {
     }
     let mut out = Vec::new();
     // 分组：导入的工程按它原来所在的文件夹归类。
-    // 选的文件夹本身是工程 → 用它上一级文件夹的名字；选的是上级文件夹 → 用里面的分类文件夹，直接放在里面的用这个文件夹的名字
+    // 选的文件夹本身是工程 → 用它上一级文件夹的名字；选的是分类文件夹 → 用这个文件夹的名字
     if let Some(mut p) = read_project(&dir, &folder_name(&dir), "") {
         p.group = dir.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| EXT_GROUP.to_string());
         out.push(p);
     } else {
-        scan_dir(&dir, "", 1, &mut out);
-        // 选的是根目录的上级时，根目录里的工程本来就在，不算导入
-        out.retain(|p| !inside(&root, Path::new(&p.path)));
+        // 选的不是工程 → 当成一个分类文件夹：只认它直属的文件夹，每个算一个工程，都归到这个文件夹的名字下
         let here = folder_name(&dir);
-        for p in &mut out {
-            if p.group.is_empty() {
-                p.group = here.clone();
+        for (sub, folder) in child_dirs(&dir, false) {
+            // 根目录本身、或者包着根目录的文件夹，不算导入
+            if inside(&root, &sub) || inside(&sub, &root) {
+                continue;
+            }
+            if let Some(p) = read_project_ex(&sub, &folder, &here, true) {
+                out.push(p);
             }
         }
     }
@@ -296,64 +296,81 @@ fn inspect_import(root: String, path: String) -> Result<ImportScan, String> {
     Ok(ImportScan { inside_root: false, projects: out })
 }
 
-fn join_group(group: &str, folder: &str) -> String {
-    if group.is_empty() {
-        folder.to_string()
-    } else {
-        format!("{}/{}", group, folder)
-    }
+/// dir 直属的文件夹（跳过系统杂项、Backup、_ 和 . 开头的；top 表示 dir 是根目录，这时还跳过库文件夹）
+fn child_dirs(dir: &Path, top: bool) -> Vec<(PathBuf, String)> {
+    let Ok(rd) = fs::read_dir(dir) else { return vec![] };
+    rd.flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| (e.path(), e.file_name().to_string_lossy().to_string()))
+        .filter(|(_, n)| !skip_dir(n, top))
+        .collect()
 }
 
-/// 是工程就收下，并只在它里面找带 project.json 的子工程；不是工程就当分类文件夹往下找
-fn scan_dir(dir: &Path, group: &str, depth: usize, out: &mut Vec<Project>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        let sub = e.path();
-        if !sub.is_dir() {
-            continue;
-        }
-        let folder = e.file_name().to_string_lossy().to_string();
-        if skip_dir(&folder, depth == 1) {
-            continue;
-        }
-        if let Some(p) = read_project(&sub, &folder, group) {
+/// 只认两层：根目录直属的文件夹，要么是一个工程（里面直接有 .toe 或 project.json），要么是一个分类文件夹；
+/// 分类文件夹直属的每个文件夹算一个工程，不再往下拆。工程里面更深的文件夹（组件、参考源文件、旧版本）都不单独算。
+fn scan_root(root: &Path, out: &mut Vec<Project>) {
+    for (sub, folder) in child_dirs(root, true) {
+        if let Some(p) = read_project(&sub, &folder, "") {
             out.push(p);
-            scan_nested(&sub, &join_group(group, &folder), 1, out);
-        } else if depth < MAX_DEPTH {
-            scan_dir(&sub, &join_group(group, &folder), depth + 1, out);
-        }
-    }
-}
-
-/// 工程内部：附带的 .toe（组件、参考源文件）不算工程，只认有 project.json 的子文件夹
-fn scan_nested(dir: &Path, group: &str, depth: usize, out: &mut Vec<Project>) {
-    if depth > NESTED_DEPTH {
-        return;
-    }
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        let sub = e.path();
-        if !sub.is_dir() {
             continue;
         }
-        let folder = e.file_name().to_string_lossy().to_string();
-        if skip_dir(&folder, false) {
-            continue;
-        }
-        if sub.join("project.json").is_file() {
-            if let Some(p) = read_project(&sub, &folder, group) {
+        for (proj, name) in child_dirs(&sub, false) {
+            if let Some(p) = read_project_ex(&proj, &name, &folder, true) {
                 out.push(p);
-                scan_nested(&sub, &join_group(group, &folder), 1, out);
-                continue;
             }
         }
-        scan_nested(&sub, &join_group(group, &folder), depth + 1, out);
     }
 }
 
+/// 文件夹第一层没有 .toe 时，往下找：取"里面有 .toe 的文件夹"中最近保存过的那一个，返回它里面的 .toe
+fn nested_toes(dir: &Path) -> Vec<Toe> {
+    let mut budget = 400usize;
+    let mut best: Option<(u64, PathBuf)> = None;
+    let mut queue = std::collections::VecDeque::from([(dir.to_path_buf(), 0usize)]);
+    while let Some((d, depth)) = queue.pop_front() {
+        if depth > 0 {
+            if let Some(latest) = toes_in(&d).iter().map(|t| t.mtime).max() {
+                if best.as_ref().map(|(m, _)| latest > *m).unwrap_or(true) {
+                    best = Some((latest, d.clone()));
+                }
+            }
+        }
+        if depth >= TOE_DEPTH {
+            continue;
+        }
+        for (sub, _) in child_dirs(&d, false) {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            queue.push_back((sub, depth + 1));
+        }
+    }
+    best.map(|(_, d)| toes_in(&d)).unwrap_or_default()
+}
+
+/// 这个文件夹的 .toe：先看第一层，没有再往下找
+fn project_toes(dir: &Path) -> Vec<Toe> {
+    let t = toes_in(dir);
+    if t.is_empty() {
+        nested_toes(dir)
+    } else {
+        t
+    }
+}
+
+/// 根目录第一层用：里面直接有 .toe 或 project.json 才算工程（否则当分类文件夹）
 fn read_project(dir: &Path, folder: &str, group: &str) -> Option<Project> {
+    read_project_ex(dir, folder, group, false)
+}
+
+/// deep：.toe 不在第一层也算工程（分类文件夹里的、导入的都这样）
+fn read_project_ex(dir: &Path, folder: &str, group: &str, deep: bool) -> Option<Project> {
     let has_meta = dir.join("project.json").is_file();
-    let toes = toes_in(dir);
+    let mut toes = toes_in(dir);
+    if toes.is_empty() && (deep || has_meta) {
+        toes = nested_toes(dir);
+    }
     if toes.is_empty() && !has_meta {
         return None; // 不是工程文件夹（只剩 Backup 的也不算）
     }
@@ -838,7 +855,7 @@ fn save_meta(path: String, meta: Value) -> Result<(), String> {
 fn open_project(app: AppHandle, path: String) -> Result<(), String> {
     let dir = Path::new(&path);
     let prefer = read_meta(dir).and_then(|m| m.get("mainToe").and_then(|v| v.as_str()).map(String::from));
-    let toe = main_toe(&toes_in(dir), prefer.as_deref()).ok_or("这个工程里没有 .toe 文件")?;
+    let toe = main_toe(&project_toes(dir), prefer.as_deref()).ok_or("这个工程里没有 .toe 文件")?;
     app.opener()
         .open_path(toe.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| e.to_string())
@@ -856,7 +873,7 @@ fn check_deletable(root: &Path, path: &Path) -> Result<PathBuf, String> {
     if !dir.is_dir() || dir == root || !dir.starts_with(&root) {
         return Err("只能操作工程根目录里的工程文件夹".into());
     }
-    if toes_in(&dir).is_empty() && !dir.join("project.json").is_file() {
+    if project_toes(&dir).is_empty() && !dir.join("project.json").is_file() {
         return Err("这个文件夹不像工程（没有 .toe 也没有 project.json），没有动它".into());
     }
     Ok(dir)
@@ -865,7 +882,7 @@ fn check_deletable(root: &Path, path: &Path) -> Result<PathBuf, String> {
 /// 检查 path 是一个工程文件夹（不要求在根目录里），给导入的工程用
 fn check_project(path: &Path) -> Result<PathBuf, String> {
     let dir = path.canonicalize().map_err(|_| "工程文件夹不存在".to_string())?;
-    if !dir.is_dir() || (toes_in(&dir).is_empty() && !dir.join("project.json").is_file()) {
+    if !dir.is_dir() || (project_toes(&dir).is_empty() && !dir.join("project.json").is_file()) {
         return Err("这个文件夹不像工程（没有 .toe 也没有 project.json），没有动它".into());
     }
     Ok(dir)
@@ -1241,7 +1258,7 @@ mod tests {
         fs::create_dir_all(root.join("Backup")).unwrap();
         fs::write(root.join("Backup").join("x.toe"), b"x").unwrap();
 
-        // 分类文件夹里的工程：01_商单/客户A/海报 应被找到，group = 01_商单/客户A
+        // 只认两层：01_商单 是分类，客户A 是工程；它的 .toe 在更深的 海报 里，不单独拆出来
         let nested = root.join("01_商单").join("客户A").join("海报");
         fs::create_dir_all(nested.join("Backup")).unwrap();
         fs::write(nested.join("poster.toe"), b"x").unwrap();
@@ -1249,9 +1266,12 @@ mod tests {
 
         let list = scan_projects(r.clone(), None).unwrap();
         assert_eq!(list.len(), 3, "应只扫到 3 个工程");
-        let n = list.iter().find(|p| p.folder == "海报").unwrap();
-        assert_eq!(n.group, "01_商单/客户A");
-        assert_eq!(n.name, "海报");
+        assert!(list.iter().all(|p| p.folder != "海报"), "更深的文件夹不单独算工程");
+        let n = list.iter().find(|p| p.folder == "客户A").unwrap();
+        assert_eq!(n.group, "01_商单");
+        assert_eq!(n.name, "客户A");
+        assert!(n.toe.as_ref().unwrap().ends_with("poster.toe"), ".toe 在里面一层也能找到并打开");
+        assert!(check_deletable(&root, Path::new(&n.path)).is_ok(), ".toe 不在第一层的工程也能移动、删除");
         let new = list.iter().find(|p| p.folder == "2026-11-17_粒子雨").unwrap();
         assert_eq!(new.name, "粒子雨");
         assert_eq!(new.meta["status"], "进行中");
@@ -1314,7 +1334,7 @@ mod tests {
         mk("02_案例/Skin/Audio", &[]);
         // 工程里附带的 .toe 不算工程
         mk("02_案例/Skin/Mediapipe_release", &["MediaPipe.toe"]);
-        // 工程里有 project.json 的子文件夹单独算
+        // 工程里更深的文件夹，哪怕有 project.json 也不单独算
         mk("02_案例/Skin/2026-11-17_Sub", &["project.json", "sub.toe"]);
         // 零散 .toe → maybe
         mk("loose", &["a.toe"]);
@@ -1327,18 +1347,23 @@ mod tests {
         mk("00_Library/Mediapipe", &["m.toe"]);
         // 不在第一层的 Library 照样扫
         mk("03_x/Library", &["lib.toe"]);
+        // 分类文件夹里的工程，.toe 分散在几个子文件夹：算一个工程，用最近保存的那个子文件夹
+        mk("03_x/多版本/v1", &["a.toe"]);
+        mk("03_x/多版本/v2/工程文件", &["b.toe", "b.2.toe"]);
+        mk("03_x/空文件夹/只有素材", &["x.png"]);
 
         let list = scan_projects(root.to_string_lossy().to_string(), None).unwrap();
         let names: Vec<_> = list.iter().map(|p| format!("{}|{}", p.group, p.folder)).collect();
         assert_eq!(list.len(), 4, "{:?}", names);
+        assert!(list.iter().all(|p| p.folder != "2026-11-17_Sub" && p.folder != "v1" && p.folder != "v2" && p.folder != "空文件夹"), "{:?}", names);
+        let multi = list.iter().find(|p| p.folder == "多版本").unwrap();
+        assert_eq!(multi.group, "03_x");
+        assert!(multi.toe.is_some());
         let skin = list.iter().find(|p| p.folder == "Skin").unwrap();
         assert_eq!(skin.confidence, "likely");
         assert_eq!(skin.toe_bases, vec!["Other".to_string(), "Skin".to_string()]);
         assert!(!skin.toe.as_ref().unwrap().contains("CrashAutoSave"));
         assert!(skin.earliest > 0);
-        let sub = list.iter().find(|p| p.folder == "2026-11-17_Sub").unwrap();
-        assert_eq!(sub.group, "02_案例/Skin");
-        assert_eq!(sub.confidence, "meta");
         assert_eq!(list.iter().find(|p| p.folder == "loose").unwrap().confidence, "maybe");
         assert!(list.iter().any(|p| p.folder == "Library"));
 
@@ -1412,14 +1437,16 @@ mod tests {
         names.sort();
         assert_eq!(names, vec!["乙".to_string(), "甲".to_string()]);
         assert!(many.projects.iter().all(|p| p.group == "一批" && p.external), "直接放在所选文件夹里的：按这个文件夹分组");
-        // 已经在根目录里的不用导入；选根目录的上级时不把根目录里的工程算进去
+        // 已经在根目录里的不用导入
         assert!(inspect_import(r.clone(), s(&root.join("inroot"))).unwrap().inside_root);
+        // 选更上一级：只认它直属的文件夹，每个算一个工程；根目录本身不算
         let up = inspect_import(r.clone(), s(&base)).unwrap();
-        assert!(up.projects.iter().all(|p| p.folder != "inroot"), "根目录里的工程不该出现");
-        assert_eq!(up.projects.len(), 3);
-        // 选上级文件夹：按里面的分类文件夹分组（带上各级）
-        assert_eq!(up.projects.iter().find(|p| p.folder == "甲").unwrap().group, "outside/一批");
-        assert_eq!(up.projects.iter().find(|p| p.folder == "单个工程").unwrap().group, "outside");
+        let ups: Vec<_> = up.projects.iter().map(|p| p.folder.clone()).collect();
+        assert_eq!(ups, vec!["outside".to_string()], "根目录不该出现，更深的文件夹不单独拆");
+        let grand = inspect_import(r.clone(), s(&outside)).unwrap();
+        let mut gs: Vec<_> = grand.projects.iter().map(|p| format!("{}|{}", p.group, p.folder)).collect();
+        gs.sort();
+        assert_eq!(gs, vec!["outside|一批".to_string(), "outside|单个工程".to_string()]);
         // 检查没有写任何东西
         assert!(!single.join("project.json").exists());
 

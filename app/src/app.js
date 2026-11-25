@@ -211,6 +211,9 @@ async function scan({ quiet = false } = {}) {
     const list = await invoke('scan_projects', { root, extra: imports.map(x => x.path) });
     if (seq !== scanSeq) return;
     loadIgnored();
+    // 早期版本会把一个工程里更深的文件夹也单独导入；现在只认直属的文件夹，套在别的工程里面的就不再登记
+    const all = list.map(p => normPath(p.path)), inner = new Set(list.filter(p => p.external && all.some(q => normPath(p.path).startsWith(q + '/'))).map(p => p.path));
+    if (inner.size) { imports = imports.filter(x => !inner.has(x.path)); saveImports(); for (let i = list.length - 1; i >= 0; i--) if (inner.has(list[i].path)) list.splice(i, 1); }
     // 导入的工程按它原来所在的文件夹分组
     for (const p of list) if (p.external) { const rec = imports.find(x => x.path === p.path); p.group = (rec && rec.group) || '外部导入'; }
     ui.live = new Set(list.map(p => p.path));
