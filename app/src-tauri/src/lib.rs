@@ -299,14 +299,20 @@ fn child_dirs(dir: &Path, top: bool) -> Vec<(PathBuf, String)> {
 /// 分类文件夹直属的每个文件夹算一个工程，不再往下拆。工程里面更深的文件夹（组件、参考源文件、旧版本）都不单独算。
 fn scan_root(root: &Path, out: &mut Vec<Project>) {
     for (sub, folder) in child_dirs(root, true) {
-        if let Some(p) = read_project(&sub, &folder, "") {
-            out.push(p);
+        // 里面直接有 .toe → 是工程
+        if !toes_in(&sub).is_empty() {
+            out.extend(read_project(&sub, &folder, ""));
             continue;
         }
-        for (proj, name) in child_dirs(&sub, false) {
-            if let Some(p) = read_project_ex(&proj, &name, &folder, true) {
-                out.push(p);
-            }
+        // 否则看它直属的文件夹：有工程 → 它是分类文件夹（哪怕它自己带着 project.json，比如被误导入过）
+        let inner: Vec<Project> = child_dirs(&sub, false)
+            .into_iter()
+            .filter_map(|(proj, name)| read_project_ex(&proj, &name, &folder, true))
+            .collect();
+        if inner.is_empty() {
+            out.extend(read_project(&sub, &folder, "")); // 只有 project.json 的空工程
+        } else {
+            out.extend(inner);
         }
     }
 }
@@ -1340,10 +1346,15 @@ mod tests {
         mk("03_x/多版本/v1", &["a.toe"]);
         mk("03_x/多版本/v2/工程文件", &["b.toe", "b.2.toe"]);
         mk("03_x/空文件夹/只有素材", &["x.png"]);
+        // 分类文件夹自己带着 project.json（被误导入过）：仍然是分类，里面的文件夹才是工程
+        mk("04_误导入", &["project.json"]);
+        mk("04_误导入/甲", &["a.toe"]);
 
         let list = scan_projects(root.to_string_lossy().to_string(), None).unwrap();
         let names: Vec<_> = list.iter().map(|p| format!("{}|{}", p.group, p.folder)).collect();
-        assert_eq!(list.len(), 5, "{:?}", names);
+        assert_eq!(list.len(), 6, "{:?}", names);
+        assert!(list.iter().all(|p| p.folder != "04_误导入"), "{:?}", names);
+        assert_eq!(list.iter().find(|p| p.folder == "甲").unwrap().group, "04_误导入");
         assert_eq!(list.iter().find(|p| p.folder == "Mediapipe").unwrap().group, "00_Library");
         assert!(list.iter().all(|p| p.folder != "2026-11-17_Sub" && p.folder != "v1" && p.folder != "v2" && p.folder != "空文件夹"), "{:?}", names);
         let multi = list.iter().find(|p| p.folder == "多版本").unwrap();
