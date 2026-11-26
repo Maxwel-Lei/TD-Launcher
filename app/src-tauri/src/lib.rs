@@ -781,7 +781,7 @@ fn builtin_component(app: &AppHandle, id: &str) -> Option<PathBuf> {
 }
 
 #[tauri::command(async)]
-fn create_project(app: AppHandle, root: String, folder: String, name: String, created: String, template: Option<String>, components: Option<Vec<CompReq>>, case: Option<bool>) -> Result<Created, String> {
+fn create_project(app: AppHandle, root: String, folder: String, name: String, created: String, template: Option<String>, components: Option<Vec<CompReq>>, case: Option<bool>, order: Option<bool>) -> Result<Created, String> {
     let mut comps = Vec::new();
     for c in components.unwrap_or_default() {
         let src = match c.src.strip_prefix("builtin:") {
@@ -805,7 +805,24 @@ fn create_project(app: AppHandle, root: String, folder: String, name: String, cr
         }
         None => None,
     };
-    create_project_at(root, folder, name, created, template_toe(&app), tpl_dir, comps, case.unwrap_or(false))
+    let (n, c) = (name.clone(), created.clone());
+    let made = create_project_at(root, folder, name, created, template_toe(&app), tpl_dir, comps, case.unwrap_or(false))?;
+    if order.unwrap_or(false) {
+        // 定制工程：多 docs（需求单、报价、验收记录）和 deliver（发给客户的压缩包），加一份交付说明
+        let _ = order_extras(Path::new(&made.path), &n, &c);
+    }
+    Ok(made)
+}
+
+const ORDER_README: &str = include_str!("../../docs/order-readme.md");
+
+fn order_extras(dir: &Path, name: &str, created: &str) -> Result<(), String> {
+    fs::create_dir_all(dir.join("docs")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(dir.join("deliver")).map_err(|e| e.to_string())?;
+    if !dir.join("README.md").exists() {
+        fs::write(dir.join("README.md"), ORDER_README.replace("{{name}}", name).replace("{{date}}", created)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// 把 src（文件或文件夹）整个复制到 dst；跳过系统杂项和启动器自己的标记文件

@@ -409,7 +409,7 @@ $('#npCreate').addEventListener('click', async () => {
     const cat = $('#npCat').value;
     const components = (comps || []).filter(c => compSel.has(c.id)).map(c => ({ name: c.name, src: c.src, load: c.load || [] }));
     if (components.some(c => /mediapipe/i.test(c.name + c.src))) toast('正在复制组件，Mediapipe 比较大，要等几秒…');
-    const res = await invoke('create_project', { root: cat ? root + '/' + cat : root, folder, name: base, created: today(), template: tplSel || null, components, case: $('#npCase').checked });
+    const res = await invoke('create_project', { root: cat ? root + '/' + cat : root, folder, name: base, created: today(), template: tplSel || null, components, case: $('#npCase').checked, order: !$('#npCase').checked && /商单|交付/.test(cat) });
     // 类型和编号记进 project.json：案例工程自动取下一个没用过的编号
     const isCaseNew = $('#npCase').checked, kind = isCaseNew ? 'case' : /商单|交付/.test(cat) ? 'order' : '';
     if (kind) {
@@ -1143,7 +1143,7 @@ async function renderCase(p) {
   if (type === 'order') {
     box.hidden = false;
     box.innerHTML = `<div class="fl"><span>交付信息</span><span class="label">定制工程</span></div>
-      <div class="case-form">${txt('slug', '英文项目名', 'four-relics', m.slug)}${txt('version', '工程版本', '1.0', m.version)}${txt('tdVersion', 'TD 版本', '2025.33230', m.tdVersion)}</div>
+      <div class="case-form">${txt('slug', '英文项目名', 'four-relics', m.slug)}${txt('version', '工程版本', '1.0', m.version)}${txt('tdVersion', 'TD 版本', '2025.33230', m.tdVersion)}${txt('orderId', '官网订单号', 'TDX-1126-9404，有就填', m.orderId)}</div>
       <div class="theme-acts" style="margin-top:8px"><button class="btn text" type="button" data-case-act="pack">打包交付</button><small style="font-size:12px;color:var(--mute)">存到工程的 deliver 文件夹，不带 project.json、docs、Backup</small></div>`;
     return;
   }
