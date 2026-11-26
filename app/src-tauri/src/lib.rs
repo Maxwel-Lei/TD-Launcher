@@ -1,7 +1,7 @@
 //! TD 工程启动器 · 后端
 //! 只做"工程文件夹"这一层的事：扫描识别、新建、导入、读写 project.json、打开、在文件夹中显示、删除（回收站）、移动、文件夹图标。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -757,8 +757,43 @@ fn save_as_template(app: AppHandle, path: String, name: String) -> Result<(), St
     save_template_at(&dir, &project, &name)
 }
 
-#[tauri::command]
-fn create_project(app: AppHandle, root: String, folder: String, name: String, created: String, template: Option<String>) -> Result<Created, String> {
+/// 新建时勾选的一个组件：src 是 .tox 文件或一个文件夹；load 是文件夹里要自动载入的 .tox（相对路径）
+#[derive(Deserialize)]
+struct CompReq {
+    name: String,
+    src: String,
+    #[serde(default)]
+    load: Vec<String>,
+}
+
+/// 软件自带的组件（现在只有缩略图截取）
+fn builtin_component(app: &AppHandle, id: &str) -> Option<PathBuf> {
+    let file = match id {
+        "thumbnail" => "TDL_Thumbnail.tox",
+        _ => return None,
+    };
+    let mut candidates = Vec::new();
+    if let Ok(r) = app.path().resource_dir() {
+        candidates.push(r.join("resources").join("components").join(file));
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("components").join(file));
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+#[tauri::command(async)]
+fn create_project(app: AppHandle, root: String, folder: String, name: String, created: String, template: Option<String>, components: Option<Vec<CompReq>>, case: Option<bool>) -> Result<Created, String> {
+    let mut comps = Vec::new();
+    for c in components.unwrap_or_default() {
+        let src = match c.src.strip_prefix("builtin:") {
+            // 自带组件还没随软件打包时直接跳过，不拦着新建
+            Some(id) => match builtin_component(&app, id) {
+                Some(p) => p,
+                None => continue,
+            },
+            None => PathBuf::from(&c.src),
+        };
+        comps.push((c.name, src, c.load));
+    }
     // 选了自己做的模板：必须是模板文件夹里的一个文件夹
     let tpl_dir = match template.filter(|t| !t.is_empty()) {
         Some(t) => {
@@ -770,10 +805,60 @@ fn create_project(app: AppHandle, root: String, folder: String, name: String, cr
         }
         None => None,
     };
-    create_project_at(root, folder, name, created, template_toe(&app), tpl_dir)
+    create_project_at(root, folder, name, created, template_toe(&app), tpl_dir, comps, case.unwrap_or(false))
 }
 
-fn create_project_at(root: String, folder: String, name: String, created: String, tpl: Option<PathBuf>, tpl_dir: Option<PathBuf>) -> Result<Created, String> {
+/// 把 src（文件或文件夹）整个复制到 dst；跳过系统杂项和启动器自己的标记文件
+fn copy_all(src: &Path, dst: &Path) -> Result<(), String> {
+    if src.is_dir() {
+        fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+        for e in fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let l = name.to_lowercase();
+            if system_junk(&name).is_some() || l == "desktop.ini" || l == ICON_FILE || l == "project.json" || l == "backup" {
+                continue;
+            }
+            copy_all(&e.path(), &dst.join(&name))?;
+        }
+        Ok(())
+    } else {
+        fs::copy(src, dst).map(|_| ()).map_err(|e| format!("复制 {} 失败：{}", src.display(), e))
+    }
+}
+
+/// 把勾选的组件复制进工程的 tox 文件夹，返回要记进 project.json 的清单。
+/// 工程里的载入器第一次打开时按这份清单把 files 里的 .tox 载入，然后把 loaded 改成 true。
+fn install_components(dir: &Path, comps: &[(String, PathBuf, Vec<String>)]) -> Result<Vec<Value>, String> {
+    let mut out = Vec::new();
+    if comps.is_empty() {
+        return Ok(out);
+    }
+    let tox = dir.join("tox");
+    fs::create_dir_all(&tox).map_err(|e| e.to_string())?;
+    for (name, src, load) in comps {
+        if !src.exists() {
+            return Err(format!("组件「{}」的文件找不到了：{}", name, src.display()));
+        }
+        let fname = src.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("组件路径不对")?;
+        let dst = tox.join(&fname);
+        copy_all(src, &dst)?;
+        let files: Vec<String> = if src.is_file() {
+            vec![format!("tox/{}", fname)]
+        } else {
+            load.iter()
+                .map(|l| l.replace('\\', "/"))
+                .filter(|l| !l.contains("..") && dst.join(l).is_file())
+                .map(|l| format!("tox/{}/{}", fname, l))
+                .collect()
+        };
+        out.push(json!({ "name": name, "files": files, "loaded": false }));
+    }
+    Ok(out)
+}
+
+const CASE_README: &str = include_str!("../../docs/case-readme.md");
+
+fn create_project_at(root: String, folder: String, name: String, created: String, tpl: Option<PathBuf>, tpl_dir: Option<PathBuf>, comps: Vec<(String, PathBuf, Vec<String>)>, case: bool) -> Result<Created, String> {
     let folder = folder.trim().trim_end_matches(['.', ' ']).to_string();
     let name = name.trim().to_string();
     if folder.is_empty() || name.is_empty() {
@@ -806,7 +891,22 @@ fn create_project_at(root: String, folder: String, name: String, created: String
             fs::create_dir_all(dir.join(sub)).map_err(|e| e.to_string())?;
         }
     }
-    let meta = json!({
+    // 组件复制到一半出错，同样不留半成品
+    let components = match install_components(&dir, &comps) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(e);
+        }
+    };
+    if case {
+        // 案例工程：多一个放演示视频的 demo 文件夹，和一份给买家看的说明
+        fs::create_dir_all(dir.join("demo")).map_err(|e| e.to_string())?;
+        if !dir.join("README.md").exists() {
+            fs::write(dir.join("README.md"), CASE_README.replace("{{name}}", &name).replace("{{date}}", &created)).map_err(|e| e.to_string())?;
+        }
+    }
+    let mut meta = json!({
         "name": name,
         "tags": [],
         "status": "进行中",
@@ -814,6 +914,9 @@ fn create_project_at(root: String, folder: String, name: String, created: String
         "note": "",
         "created": created,
     });
+    if !components.is_empty() {
+        meta["components"] = Value::Array(components);
+    }
     fs::write(dir.join("project.json"), serde_json::to_string_pretty(&meta).unwrap()).map_err(|e| e.to_string())?;
     // 模板里没有 .toe（或用的是默认模板）：用软件自带的那份
     if let (None, Some(tpl)) = (&toe, tpl) {
@@ -1230,7 +1333,7 @@ mod tests {
         fs::write(&tpl, b"fake toe").unwrap();
         let r = root.to_string_lossy().to_string();
 
-        let c = create_project_at(r.clone(), "2026-11-17_粒子雨".into(), "粒子雨".into(), "2026-11-17".into(), Some(tpl.clone()), None).unwrap();
+        let c = create_project_at(r.clone(), "2026-11-17_粒子雨".into(), "粒子雨".into(), "2026-11-17".into(), Some(tpl.clone()), None, vec![], false).unwrap();
         let dir = PathBuf::from(&c.path);
         for sub in SUBDIRS {
             assert!(dir.join(sub).is_dir(), "缺少 {}", sub);
@@ -1239,9 +1342,9 @@ mod tests {
         assert_eq!(c.toe.is_some(), true);
 
         // 同名再建一次应当报错
-        assert!(create_project_at(r.clone(), "2026-11-17_粒子雨".into(), "粒子雨".into(), "x".into(), None, None).is_err());
+        assert!(create_project_at(r.clone(), "2026-11-17_粒子雨".into(), "粒子雨".into(), "x".into(), None, None, vec![], false).is_err());
         // 非法字符
-        assert!(create_project_at(r.clone(), "a:b".into(), "a:b".into(), "x".into(), None, None).is_err());
+        assert!(create_project_at(r.clone(), "a:b".into(), "a:b".into(), "x".into(), None, None, vec![], false).is_err());
 
         // 旧工程：只有 .toe（带版本号）和 thumb.jpg，没有 project.json
         let old = root.join("旧工程");
@@ -1552,7 +1655,7 @@ mod tests {
         assert_eq!(list[0].entries, vec!["灯光/", "素材/", "清单.md"]);
 
         let r = root.to_string_lossy().to_string();
-        let c = create_project_at(r.clone(), "2026_跨年".into(), "跨年".into(), "2026-12-31".into(), Some(builtin.clone()), Some(t.clone())).unwrap();
+        let c = create_project_at(r.clone(), "2026_跨年".into(), "跨年".into(), "2026-12-31".into(), Some(builtin.clone()), Some(t.clone()), vec![], false).unwrap();
         let p = PathBuf::from(&c.path);
         assert_eq!(fs::read(p.join("跨年.toe")).unwrap(), b"new", "用最近保存的 .toe 并改名");
         assert!(p.join("素材/视频/开场.txt").is_file() && p.join("灯光").is_dir() && p.join("清单.md").is_file());
@@ -1562,7 +1665,7 @@ mod tests {
         assert!(!p.join("assets").exists(), "自己的模板不加默认的子文件夹");
 
         // 模板里没有 .toe：用自带的
-        let c2 = create_project_at(r.clone(), "空的".into(), "空的".into(), "x".into(), Some(builtin.clone()), Some(tdir.join("空模板"))).unwrap();
+        let c2 = create_project_at(r.clone(), "空的".into(), "空的".into(), "x".into(), Some(builtin.clone()), Some(tdir.join("空模板")), vec![], false).unwrap();
         assert_eq!(fs::read(PathBuf::from(&c2.path).join("空的.toe")).unwrap(), b"builtin");
         assert!(PathBuf::from(&c2.path).join("a/b").is_dir());
 
@@ -1681,7 +1784,324 @@ mod tests {
         assert_eq!(strip_version("v1.final"), "v1.final");
         assert_eq!(strip_version("plain"), "plain");
     }
+    #[test]
+    fn components_and_case() {
+        let base = tmp("comps");
+        let root = base.join("root");
+        fs::create_dir_all(&root).unwrap();
+        let lib = base.join("lib");
+        fs::create_dir_all(lib.join("Mediapipe/toxes")).unwrap();
+        fs::write(lib.join("TDMCP.tox"), b"t").unwrap();
+        fs::write(lib.join("Mediapipe/MediaPipe.tox"), b"m").unwrap();
+        fs::write(lib.join("Mediapipe/toxes/hand.tox"), b"h").unwrap();
+        fs::write(lib.join("Mediapipe/desktop.ini"), b"x").unwrap();
+        fs::write(lib.join("Mediapipe/project.json"), b"{}").unwrap();
+        let comps = vec![
+            ("TDMCP".to_string(), lib.join("TDMCP.tox"), vec![]),
+            ("Mediapipe".to_string(), lib.join("Mediapipe"), vec!["MediaPipe.tox".to_string(), "toxes\\hand.tox".to_string(), "没有.tox".to_string(), "../x.tox".to_string()]),
+        ];
+        let r = root.to_string_lossy().to_string();
+        let c = create_project_at(r.clone(), "CASE15_测试".into(), "测试".into(), "2026-11-26".into(), None, None, comps, true).unwrap();
+        let dir = PathBuf::from(&c.path);
+        assert!(dir.join("tox/TDMCP.tox").is_file());
+        assert!(dir.join("tox/Mediapipe/toxes/hand.tox").is_file());
+        assert!(!dir.join("tox/Mediapipe/desktop.ini").exists() && !dir.join("tox/Mediapipe/project.json").exists());
+        let meta = read_meta(&dir).unwrap();
+        let list = meta["components"].as_array().unwrap();
+        assert_eq!(list[0]["files"], json!(["tox/TDMCP.tox"]));
+        assert_eq!(list[1]["files"], json!(["tox/Mediapipe/MediaPipe.tox", "tox/Mediapipe/toxes/hand.tox"]));
+        assert_eq!(list[1]["loaded"], json!(false));
+        // 案例工程：demo 文件夹和说明
+        assert!(dir.join("demo").is_dir());
+        assert!(fs::read_to_string(dir.join("README.md")).unwrap().contains("测试"));
+        // 组件文件不见了 → 报错，不留半成品
+        let bad = vec![("没了".to_string(), lib.join("nope.tox"), vec![])];
+        assert!(create_project_at(r.clone(), "坏的".into(), "坏的".into(), "x".into(), None, None, bad, false).is_err());
+        assert!(!root.join("坏的").exists());
+        // 规范检查
+        let chk = check_case(c.path.clone());
+        let get = |l: &str| chk.iter().find(|x| x.label == l).unwrap().ok;
+        assert!(get("有说明文档") && get("素材在工程里"));
+        assert!(!get("有演示视频") && !get("工程文件在第一层") && !get("标注完整"));
+        fs::write(dir.join("demo/演示.mp4"), b"v").unwrap();
+        fs::write(dir.join("测试.toe"), b"t").unwrap();
+        save_meta(c.path.clone(), json!({"tags": ["手势"], "note": "一句话"})).unwrap();
+        let chk = check_case(c.path.clone());
+        assert!(chk.iter().filter(|x| x.label != "有预览图").all(|x| x.ok));
+        // save_meta 不会把组件清单冲掉
+        assert!(read_meta(&dir).unwrap()["components"].is_array());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn watermark_scan() {
+        let root = tmp("wm");
+        fs::create_dir_all(&root).unwrap();
+        let r = root.to_string_lossy().to_string();
+        let s = wm_scan(r.clone(), false).unwrap();
+        assert!(!s.exists && s.items.is_empty() && !root.join("案例视频").exists());
+        let s = wm_scan(r.clone(), true).unwrap();
+        assert!(s.exists && root.join("案例视频/无水印").is_dir() && root.join("案例视频/水印版").is_dir());
+        let src = root.join("案例视频/无水印");
+        fs::create_dir_all(src.join("竖版")).unwrap();
+        fs::write(src.join("CASE01_手势寻宝_握拳收集.mov"), b"v").unwrap();
+        fs::write(src.join("竖版/CASE02_晕染.mp4"), b"v").unwrap();
+        fs::write(src.join("说明.txt"), b"x").unwrap();
+        fs::create_dir_all(src.join("_草稿")).unwrap();
+        fs::write(src.join("_草稿/x.mp4"), b"v").unwrap();
+        let s = wm_scan(r.clone(), false).unwrap();
+        let rels: Vec<_> = s.items.iter().map(|i| i.rel.clone()).collect();
+        assert_eq!(rels, vec!["CASE01_手势寻宝_握拳收集.mov".to_string(), "竖版/CASE02_晕染.mp4".to_string()]);
+        assert!(s.items.iter().all(|i| !i.done));
+        assert!(s.items[0].out.replace('\\', "/").ends_with("案例视频/水印版/CASE01_手势寻宝_握拳收集.mp4"));
+        // 水印版已经有了 → 算同步好
+        fs::create_dir_all(root.join("案例视频/水印版/竖版")).unwrap();
+        fs::write(root.join("案例视频/水印版/竖版/CASE02_晕染.mp4"), b"o").unwrap();
+        let s = wm_scan(r.clone(), false).unwrap();
+        assert!(!s.items[0].done && s.items[1].done);
+        assert_eq!(parse_size("  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709), 1920x1080 [SAR 1:1 DAR 16:9], 8000 kb/s"), Some((1920, 1080)));
+        assert_eq!(parse_size("Stream #0:0: Video: prores, yuv422p10le, 1080x1920, 30 fps\nStream #0:1: Audio: aac"), Some((1080, 1920)));
+        assert_eq!(parse_size("Stream #0:1: Audio: aac, 48000 Hz"), None);
+        let _ = fs::remove_dir_all(&root);
+    }
 }
+
+/* ================= 案例工程规范检查 ================= */
+
+const VIDEO_EXTS: [&str; 6] = ["mp4", "mov", "mkv", "avi", "webm", "m4v"];
+
+fn is_video(p: &Path) -> bool {
+    p.is_file() && p.extension().map(|e| VIDEO_EXTS.contains(&e.to_string_lossy().to_lowercase().as_str())).unwrap_or(false)
+}
+
+#[derive(Serialize)]
+struct CaseCheck {
+    label: String,
+    ok: bool,
+    hint: String,
+}
+
+/// 按《案例工程规范》逐条检查一个工程文件夹，只看文件夹这一层能看出来的东西
+#[tauri::command]
+fn check_case(path: String) -> Vec<CaseCheck> {
+    let dir = PathBuf::from(path);
+    let files: Vec<String> = fs::read_dir(&dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect()).unwrap_or_default();
+    let has = |names: &[&str]| files.iter().any(|f| names.iter().any(|n| f == n));
+    let demo = fs::read_dir(dir.join("demo")).map(|rd| rd.flatten().any(|e| is_video(&e.path()))).unwrap_or(false);
+    let meta = read_meta(&dir).unwrap_or(Value::Null);
+    let tagged = meta.get("tags").and_then(|t| t.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+    let noted = meta.get("note").and_then(|t| t.as_str()).map(|a| !a.trim().is_empty()).unwrap_or(false);
+    let item = |label: &str, ok: bool, hint: &str| CaseCheck { label: label.into(), ok, hint: hint.into() };
+    vec![
+        item("工程文件在第一层", !toes_in(&dir).is_empty(), "把主 .toe 放在工程文件夹第一层，买家打开文件夹就能看到"),
+        item("有说明文档", has(&["readme.md", "readme.txt", "使用说明.md", "使用说明.txt"]), "第一层放一份 README.md：运行环境、依赖、怎么操作、能改哪些参数"),
+        item("有演示视频", demo, "把成片放进 demo 文件夹（mp4 / mov）"),
+        item("有预览图", has(&["thumb.jpg", "thumb.png", "cover.jpg", "cover.png"]) || meta.get("thumbFile").and_then(|t| t.as_str()).map(|t| t.len() > 1).unwrap_or(false), "用 TD 打开保存一次，或在详情里选一张图"),
+        item("素材在工程里", dir.join("assets").is_dir(), "用到的图片、视频、模型都放进 assets，路径用相对路径"),
+        item("标注完整", tagged && noted, "在详情里填上标签和一句话备注，买家一眼知道这是什么"),
+    ]
+}
+
+/* ================= 案例演示视频加水印 ================= */
+
+const WM_DIR: &str = "案例视频";
+const WM_SRC: &str = "无水印";
+const WM_OUT: &str = "水印版";
+
+#[derive(Serialize)]
+struct WmItem {
+    rel: String,
+    name: String,
+    src: String,
+    out: String,
+    done: bool,
+}
+
+#[derive(Serialize)]
+struct WmScan {
+    dir: String,
+    exists: bool,
+    ffmpeg: Option<String>,
+    items: Vec<WmItem>,
+}
+
+/// 不弹黑色命令行窗口
+fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
+}
+
+/// 找 ffmpeg：只查固定位置（含之前加水印脚本下载到 根目录\_tools 的那份），最后试 PATH
+fn find_ffmpeg(root: &Path) -> Option<PathBuf> {
+    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let mut c: Vec<PathBuf> = Vec::new();
+    for base in [root.join("_tools"), root.join(WM_DIR).join("_tools")] {
+        if let Ok(rd) = fs::read_dir(&base) {
+            for e in rd.flatten() {
+                c.push(e.path().join("bin").join(exe));
+            }
+        }
+        c.push(base.join(exe));
+    }
+    for (var, tail) in [("LOCALAPPDATA", "Microsoft/WinGet/Links"), ("ProgramFiles", "ffmpeg/bin"), ("USERPROFILE", "scoop/shims"), ("ProgramData", "chocolatey/bin")] {
+        if let Ok(v) = std::env::var(var) {
+            c.push(PathBuf::from(v).join(tail).join(exe));
+        }
+    }
+    for d in ["C:/ffmpeg/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+        c.push(PathBuf::from(d).join(exe));
+    }
+    if let Some(p) = c.into_iter().find(|p| p.is_file()) {
+        return Some(p);
+    }
+    let ok = quiet(std::process::Command::new("ffmpeg").arg("-version")).output().map(|o| o.status.success()).unwrap_or(false);
+    ok.then(|| PathBuf::from("ffmpeg"))
+}
+
+fn wm_out_path(base: &Path, rel: &str) -> PathBuf {
+    base.join(WM_OUT).join(Path::new(rel).with_extension("mp4"))
+}
+
+fn wm_collect(src_root: &Path, dir: &Path, depth: usize, base: &Path, out: &mut Vec<WmItem>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for p in entries {
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if name.starts_with('.') || name.starts_with('_') {
+            continue;
+        }
+        if p.is_dir() {
+            if depth < 3 {
+                wm_collect(src_root, &p, depth + 1, base, out);
+            }
+        } else if is_video(&p) {
+            let rel = p.strip_prefix(src_root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+            let o = wm_out_path(base, &rel);
+            // 水印版存在、而且不比原片旧，才算同步好了
+            let done = o.is_file() && mtime(&o) >= mtime(&p);
+            out.push(WmItem { name: p.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), src: p.to_string_lossy().to_string(), out: o.to_string_lossy().to_string(), rel, done });
+        }
+    }
+}
+
+/// 读 根目录/案例视频/无水印 里的视频，对照 水印版 看哪些还没同步。create=true 时把这两个文件夹建好
+#[tauri::command(async)]
+fn wm_scan(root: String, create: bool) -> Result<WmScan, String> {
+    let root = PathBuf::from(root);
+    if !root.is_dir() {
+        return Err("工程根目录不存在".into());
+    }
+    let base = root.join(WM_DIR);
+    if create {
+        fs::create_dir_all(base.join(WM_SRC)).map_err(|e| e.to_string())?;
+        fs::create_dir_all(base.join(WM_OUT)).map_err(|e| e.to_string())?;
+    }
+    let src_root = base.join(WM_SRC);
+    let mut items = Vec::new();
+    wm_collect(&src_root, &src_root, 1, &base, &mut items);
+    Ok(WmScan { dir: base.to_string_lossy().to_string(), exists: src_root.is_dir(), ffmpeg: find_ffmpeg(&root).map(|p| p.to_string_lossy().to_string()), items })
+}
+
+/// 从 "…, 1920x1080 [SAR…" 这样的文字里找出画面尺寸
+fn parse_size(text: &str) -> Option<(u32, u32)> {
+    for line in text.lines().filter(|l| l.contains("Video:")) {
+        for tok in line.split(|c: char| c == ',' || c == ' ' || c == '[') {
+            if let Some((w, h)) = tok.split_once('x') {
+                if let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>()) {
+                    if w >= 16 && h >= 16 {
+                        return Some((w, h));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 视频的宽高（用 ffmpeg -i 的输出读，不依赖 ffprobe）
+#[tauri::command(async)]
+fn wm_probe(root: String, src: String) -> Result<(u32, u32), String> {
+    let ff = find_ffmpeg(Path::new(&root)).ok_or("没找到 ffmpeg")?;
+    let out = quiet(std::process::Command::new(ff).args(["-hide_banner", "-i"]).arg(&src)).output().map_err(|e| e.to_string())?;
+    parse_size(&String::from_utf8_lossy(&out.stderr)).ok_or_else(|| "读不出这个视频的画面尺寸".to_string())
+}
+
+#[derive(Deserialize)]
+struct WmJob {
+    root: String,
+    rel: String,
+    overlay: Vec<u8>,
+    cw: u32,
+    ch: u32,
+    ix: u32,
+    iy: u32,
+    iw: u32,
+    ih: u32,
+}
+
+/// 给一个视频加水印：画面等比缩放放进画布的内框，再把整张水印图（界面按模板画好的 PNG）盖上去。
+/// 优先用 NVIDIA 显卡编码，不行再用 CPU。原片不动。
+#[tauri::command(async)]
+fn wm_render(job: WmJob) -> Result<String, String> {
+    let root = PathBuf::from(&job.root);
+    if job.rel.split('/').any(|s| s == ".." || s.is_empty()) {
+        return Err("视频路径不对".into());
+    }
+    let base = root.join(WM_DIR);
+    let src = base.join(WM_SRC).join(&job.rel);
+    if !src.is_file() {
+        return Err("原视频找不到了".into());
+    }
+    let ff = find_ffmpeg(&root).ok_or("没找到 ffmpeg")?;
+    let out = wm_out_path(&base, &job.rel);
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let stamp = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let ov = std::env::temp_dir().join(format!("tdl_wm_{}_{}.png", std::process::id(), stamp));
+    fs::write(&ov, &job.overlay).map_err(|e| e.to_string())?;
+    let tmp = out.with_extension("part.mp4");
+    let (cw, ch, ix, iy, iw, ih) = (job.cw, job.ch, job.ix, job.iy, job.iw, job.ih);
+    let fc = format!("[0:v]scale={iw}:{ih}:force_original_aspect_ratio=decrease:flags=lanczos,setsar=1,pad={cw}:{ch}:trunc(({ix}+({iw}-iw)/2)/2)*2:trunc(({iy}+({ih}-ih)/2)/2)*2:color=0x0A0A0A[v];[v][1:v]overlay=0:0,format=yuv420p[o]");
+    let encoders: [&[&str]; 2] = [&["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"], &["-c:v", "libx264", "-preset", "medium", "-crf", "20"]];
+    let mut last = String::new();
+    let mut ok = false;
+    for enc in encoders {
+        let mut cmd = std::process::Command::new(&ff);
+        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src).arg("-i").arg(&ov);
+        cmd.args(["-filter_complex", &fc, "-map", "[o]", "-map", "0:a?"]).args(enc);
+        cmd.args(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]).arg(&tmp);
+        match quiet(&mut cmd).output() {
+            Ok(o) if o.status.success() => {
+                ok = true;
+                break;
+            }
+            Ok(o) => last = String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string(),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    let _ = fs::remove_file(&ov);
+    if !ok {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("ffmpeg 没能处理这个视频：{}", last));
+    }
+    let _ = fs::remove_file(&out);
+    fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
+    Ok(out.to_string_lossy().to_string())
+}
+
+/// 界面用来判断组件库里的路径还在不在："file" / "dir" / ""
+#[tauri::command]
+fn path_kind(path: String) -> String {
+    let p = Path::new(&path);
+    if p.is_file() { "file".into() } else if p.is_dir() { "dir".into() } else { String::new() }
+}
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1696,7 +2116,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![scan_projects, inspect_import, set_thumb, list_templates, open_templates_dir, save_as_template, create_project, save_meta, open_project, reveal, delete_project, move_project, set_folder_icon, read_image, save_custom_logo, clear_custom_logo, custom_logo, list_user_themes, open_themes_dir])
+        .invoke_handler(tauri::generate_handler![scan_projects, inspect_import, set_thumb, list_templates, open_templates_dir, save_as_template, create_project, save_meta, open_project, reveal, delete_project, move_project, set_folder_icon, read_image, save_custom_logo, clear_custom_logo, custom_logo, list_user_themes, open_themes_dir, check_case, wm_scan, wm_probe, wm_render, path_kind])
         .run(tauri::generate_context!())
         .expect("启动失败");
 }

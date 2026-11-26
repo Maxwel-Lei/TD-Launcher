@@ -36,7 +36,7 @@ const IS_WIN = /Windows/i.test(navigator.userAgent);
 
 // 设置：只记在这台电脑上
 const flag = (k, d) => { const v = localStorage.getItem(k); return v === null ? d : v === '1'; };
-const cfg = { folderIcon: flag('folderIcon', false), datePrefix: flag('datePrefix', true), autoOpen: flag('autoOpen', true), autoRescan: flag('autoRescan', true), groupByFolder: flag('groupByFolder', true) };
+const cfg = { folderIcon: flag('folderIcon', false), datePrefix: flag('datePrefix', true), autoOpen: flag('autoOpen', true), autoRescan: flag('autoRescan', true), autoWm: flag('autoWm', true), groupByFolder: flag('groupByFolder', true) };
 function setCfg(k, v) { cfg[k] = v; try { localStorage.setItem(k, v ? '1' : '0'); } catch (e) {} }
 
 /* ================= 主题 =================
@@ -230,6 +230,7 @@ async function scan({ quiet = false } = {}) {
   render();
   if (ui.openId) { const p = cur(); if (p) refreshDetailHead(p); else closeAll(); }
   if (cfg.folderIcon) syncIcons(true, true);
+  wmAuto();
 }
 
 /* ================= 文件夹图标 ================= */
@@ -402,7 +403,10 @@ $('#npCreate').addEventListener('click', async () => {
   if (!base) { toast('先给工程起个名字'); $('#npName').focus(); return; }
   const btn = $('#npCreate'); btn.disabled = true;
   try {
-    const res = await invoke('create_project', { root, folder, name: base, created: today(), template: tplSel || null });
+    const cat = $('#npCat').value;
+    const components = (comps || []).filter(c => compSel.has(c.id)).map(c => ({ name: c.name, src: c.src, load: c.load || [] }));
+    if (components.some(c => /mediapipe/i.test(c.name + c.src))) toast('正在复制组件，Mediapipe 比较大，要等几秒…');
+    const res = await invoke('create_project', { root: cat ? root + '/' + cat : root, folder, name: base, created: today(), template: tplSel || null, components, case: $('#npCase').checked });
     closeAll();
     await scan({ quiet: true });
     if (res.toe && !cfg.autoOpen) {
@@ -422,7 +426,7 @@ function openNew() {
   closeAll(); $('#npWarn').hidden = true; $('#npName').value = '';
   $('#npDate').checked = cfg.datePrefix;
   $('#npCreate').textContent = cfg.autoOpen ? '创建并用 TD 打开' : '创建';
-  renderTpls(); updateTree(); syncRoot(); loadTemplates();
+  renderTpls(); updateTree(); syncRoot(); loadTemplates(); renderCats(); loadComps().then(() => { compSel = new Set(comps.filter(c => c.on && !c.missing).map(c => c.id)); renderNpComps(); });
   $('#scrim').classList.add('on'); $('#modal').classList.add('on');
   setTimeout(() => $('#npName').focus(), 60);
 }
@@ -455,7 +459,7 @@ function refreshDetailHead(p) {
 function openDetail(id) {
   const p = projects.find(x => x.id === id); if (!p) return;
   ui.openId = id; closeAll(true); ui.openId = id;
-  refreshDetailHead(p);
+  refreshDetailHead(p); renderCase(p);
   $('#dClient').value = p.client; $('#dNote').value = p.note;
   renderDetailBits(p);
   $('#scrim').classList.add('on'); $('#drawer').classList.add('on');
@@ -994,7 +998,7 @@ function openSet() {
   $('#sIcon').checked = cfg.folderIcon && IS_WIN; $('#sIcon').disabled = !IS_WIN;
   $('#sIconRow').classList.toggle('off', !IS_WIN);
   if (!IS_WIN) $('#sIconRow').title = '目前只支持 Windows';
-  $('#sDate').checked = cfg.datePrefix; $('#sOpen').checked = cfg.autoOpen; $('#sRescan').checked = cfg.autoRescan; $('#sGroup').checked = cfg.groupByFolder;
+  $('#sDate').checked = cfg.datePrefix; $('#sOpen').checked = cfg.autoOpen; $('#sRescan').checked = cfg.autoRescan; $('#sWm').checked = cfg.autoWm; loadComps().then(renderSetComps); $('#sGroup').checked = cfg.groupByFolder;
   renderSetInfo(); drawLogoPrev();
   $('#scrim').classList.add('on'); $('#set').classList.add('on');
 }
@@ -1002,11 +1006,187 @@ $('#sIcon').addEventListener('change', e => { setCfg('folderIcon', e.target.chec
 $('#sDate').addEventListener('change', e => setCfg('datePrefix', e.target.checked));
 $('#sOpen').addEventListener('change', e => setCfg('autoOpen', e.target.checked));
 $('#sRescan').addEventListener('change', e => setCfg('autoRescan', e.target.checked));
+$('#sWm').addEventListener('change', e => { setCfg('autoWm', e.target.checked); if (e.target.checked) wmAuto(); });
 $('#sGroup').addEventListener('change', e => { setCfg('groupByFolder', e.target.checked); render(); });
 
 /* ================= 通用 ================= */
+/* ================= 刷新 ================= */
+$('#doRefresh').addEventListener('click', async () => { await scan(); if (!ui.error) toast(`已刷新 · 共 ${projects.length} 个工程`); });
+
+/* ================= 组件库：新建工程时可以勾选带上的 tox ================= */
+// 每个组件：src 是一个 .tox 文件或一个文件夹，新建时整个复制进工程的 tox 文件夹；
+// load 是文件夹里要自动载入的 .tox。清单会记进 project.json，由工程里的载入器在第一次打开时载入。
+let comps = null, compSel = new Set();
+function saveComps() { try { localStorage.setItem('components', JSON.stringify(comps.map(({ missing, ...c }) => c))); } catch (e) {} }
+async function loadComps() {
+  if (!comps) {
+    try { const v = JSON.parse(localStorage.getItem('components') || 'null'); if (Array.isArray(v)) comps = v; } catch (e) {}
+    if (!comps) {
+      if (!root) return;
+      comps = [{ id: 'thumbnail', name: '缩略图截取', src: 'builtin:thumbnail', load: [], on: true }];
+      // 第一次：按库里现成的位置找一遍，找到的才加进来
+      const guess = [['TDMCP', '00_Library/TDMCP/TDMCP.tox', [], true], ['Mediapipe', '00_Library/Mediapipe_release_0.6.0/toxes', ['MediaPipe.tox', 'hand_tracking.tox'], false], ['BTDR', '03_BTDR/release_BetterTDRender/BTDR.tox', [], false]];
+      for (const [name, rel, load, on] of guess) {
+        const src = root.replace(/[\\/]+$/, '') + '/' + rel;
+        if (await invoke('path_kind', { path: src }).catch(() => '')) comps.push({ id: name, name, src, load, on });
+      }
+      saveComps();
+    }
+  }
+  for (const c of comps) c.missing = !c.src.startsWith('builtin:') && !(await invoke('path_kind', { path: c.src }).catch(() => ''));
+}
+const compNote = c => c.src.startsWith('builtin:') ? '软件自带 · 保存工程时自动截一张预览图' : c.missing ? '找不到文件：' + c.src : shortPath(c.src) + (c.load && c.load.length ? ' · 自动载入 ' + c.load.join('、') : '');
+function renderNpComps() {
+  $('#npComps').innerHTML = (comps || []).map(c => `<label class="comp-row"><input type="checkbox" data-comp="${esc(c.id)}"${compSel.has(c.id) ? ' checked' : ''}${c.missing ? ' disabled' : ''}><span>${esc(c.name)}</span><span></span><span class="sub${c.missing ? ' bad' : ''}">${esc(compNote(c))}</span></label>`).join('') || '<div class="set-info">组件库是空的，可以在设置里添加</div>';
+}
+$('#npComps').addEventListener('change', e => { const id = e.target.dataset.comp; if (!id) return; e.target.checked ? compSel.add(id) : compSel.delete(id); });
+function renderSetComps() {
+  $('#sComps').innerHTML = (comps || []).map(c => `<div class="comp-row"><input type="checkbox" data-comp-on="${esc(c.id)}"${c.on ? ' checked' : ''} title="新建工程时默认勾选" aria-label="${esc(c.name)} 默认勾选"><span>${esc(c.name)}</span>${c.src.startsWith('builtin:') ? '<span></span>' : `<button type="button" data-comp-rm="${esc(c.id)}">移除</button>`}<span class="sub${c.missing ? ' bad' : ''}">${esc(compNote(c))}</span></div>`).join('') || '<div class="set-info">还没有组件</div>';
+}
+$('#sComps').addEventListener('change', e => { const c = comps.find(x => x.id === e.target.dataset.compOn); if (c) { c.on = e.target.checked; saveComps(); } });
+$('#sComps').addEventListener('click', e => { const id = e.target.dataset.compRm; if (!id) return; comps = comps.filter(c => c.id !== id); saveComps(); renderSetComps(); });
+async function addComp(dir) {
+  const f = await dialog.open(dir ? { directory: true, multiple: false, title: '选择组件文件夹（新建工程时整个复制进 tox 文件夹）' } : { multiple: false, title: '选择 .tox 文件', filters: [{ name: 'TouchDesigner 组件', extensions: ['tox'] }] });
+  if (!f) return;
+  await loadComps(); if (!comps) comps = [];
+  const name = baseName(f).replace(/\.tox$/i, '');
+  if (comps.some(c => normPath(c.src) === normPath(f))) { toast('这个组件已经在库里了'); return; }
+  comps.push({ id: name + '-' + Date.now().toString(36), name, src: f, load: [], on: false });
+  saveComps(); renderSetComps(); toast(`已加入组件库：${name}`);
+}
+$('#sCompFile').addEventListener('click', () => addComp(false));
+$('#sCompDir').addEventListener('click', () => addComp(true));
+
+/* 新建时选分类：根目录直属、里面已经有工程的文件夹 */
+function renderCats() {
+  const cats = [...new Set(projects.filter(p => !p.external).map(topGroup).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh'));
+  let last = ''; try { last = localStorage.getItem('newCat') || ''; } catch (e) {}
+  if (ui.group && cats.includes(ui.group)) last = ui.group;
+  $('#npCat').innerHTML = `<option value="">（根目录）</option>` + cats.map(c => `<option value="${esc(c)}"${c === last ? ' selected' : ''}>${esc(c)}</option>`).join('');
+  $('#npCase').checked = /案例/.test($('#npCat').value);
+}
+$('#npCat').addEventListener('change', e => { try { localStorage.setItem('newCat', e.target.value); } catch (er) {} $('#npCase').checked = /案例/.test(e.target.value); });
+
+/* ================= 案例工程规范检查（详情里，只对「案例」分类下的工程显示） ================= */
+async function renderCase(p) {
+  const box = $('#dCase');
+  if (!/案例/.test(topGroup(p)) && !/^CASE\d/i.test(p.folder || '')) { box.hidden = true; return; }
+  let list = [];
+  try { list = await invoke('check_case', { path: p.path }); } catch (e) { box.hidden = true; return; }
+  if (ui.openId !== p.id) return;
+  const n = list.filter(x => x.ok).length;
+  box.hidden = false;
+  box.innerHTML = `<div class="fl"><span>案例工程规范</span><span class="label">${n} / ${list.length}${n === list.length ? ' · 可以交付' : ''}</span></div><ul class="case-list">${list.map(x => `<li class="${x.ok ? 'yes' : 'no'}"><span>${x.ok ? '✓' : '○'}</span><span>${esc(x.label)}</span>${x.ok ? '' : `<small>${esc(x.hint)}</small>`}</li>`).join('')}</ul>`;
+}
+
+/* ================= 案例视频水印 ================= */
+// 四套标准模板：画布尺寸 + 画面内框。画面等比缩放放进内框，四周是 TD学长 的深色边框和标识。
+const WM_TPL = {
+  '16:9': { cw: 1920, ch: 1080, ix: 82, iy: 28, iw: 1756, ih: 988 },
+  '9:16': { cw: 1080, ch: 1920, ix: 40, iy: 40, iw: 1000, ih: 1736 },
+  '3:4': { cw: 1080, ch: 1440, ix: 40, iy: 40, iw: 1000, ih: 1256 },
+  '4:3': { cw: 1440, ch: 1080, ix: 62, iy: 28, iw: 1316, ih: 988 },
+};
+const WM_BRAND = { name: 'TD学长', site: 'TDXUEZHANG.COM', accent: '#C8FA1E', bg: '#0A0A0A' };
+const WM_MARK = (document.querySelector('header .logo path') || { getAttribute: () => '' }).getAttribute('d');
+const wmPick = (w, h) => Object.keys(WM_TPL).map(k => { const [a, b] = k.split(':').map(Number); return [Math.abs(Math.log((w / h) / (a / b))), k]; }).sort((x, y) => x[0] - y[0])[0][1];
+// 文件名 → 编号、标题、副标题：CASE01_手势寻宝_握拳收集
+function wmInfo(it) {
+  let stem = it.name.replace(/[_\s-]*TD学长$/i, ''), no = '';
+  const m = stem.match(/^CASE[\s_-]*(\d+)[\s_-]*(.*)$/i);
+  if (m) { no = m[1].padStart(2, '0'); stem = m[2]; }
+  const parts = stem.split('_').map(x => x.trim()).filter(Boolean);
+  // 同编号的案例工程有标签的话，拿来当右下角的技术标签
+  const proj = no && projects.find(p => new RegExp('^CASE[\\s_-]*0*' + Number(no) + '(\\D|$)', 'i').test(p.folder || ''));
+  const tags = (proj && proj.tags.length ? proj.tags.slice(0, 3) : ['TouchDesigner']).map(t => t.toUpperCase());
+  return { no, title: parts[0] || it.name, sub: parts.slice(1).join(' '), tags };
+}
+function wmDraw(t, info) {
+  const c = document.createElement('canvas'); c.width = t.cw; c.height = t.ch;
+  const g = c.getContext('2d'), B = WM_BRAND, mono = '"Cascadia Mono","Consolas","SF Mono","Menlo",monospace', cjk = '"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif';
+  const { ix, iy, iw, ih, cw, ch } = t, ir = ix + iw, ib = iy + ih, tall = ch - ib > 100;
+  g.fillStyle = B.bg; g.fillRect(0, 0, cw, ch); g.clearRect(ix, iy, iw, ih);
+  // 四角的定位角
+  g.fillStyle = B.accent; const L = 34, T = 4;
+  for (const r of [[ix - T, iy - T, L + T, T], [ix - T, iy - T, T, L + T], [ir - L, iy - T, L + T, T], [ir, iy - T, T, L + T], [ix - T, ib, L + T, T], [ix - T, ib - L, T, L + T], [ir - L, ib, L + T, T], [ir, ib - L, T, L + T]]) g.fillRect(...r);
+  const mark = (x, y, s) => { g.fillStyle = B.accent; g.beginPath(); g.roundRect(x, y, s, s, s * 0.14); g.fill(); if (!WM_MARK) return; g.save(); g.translate(x + s * 0.16, y + s * 0.17); g.scale(s * 0.68 / 720, s * 0.68 / 720); g.translate(-280 - 57, -290); g.fillStyle = B.bg; g.fill(new Path2D(WM_MARK), 'evenodd'); g.restore(); };
+  g.textBaseline = 'middle';
+  // 右上角的小标
+  { const h = 44, pad = 10; g.font = `700 20px ${cjk}`; const wn = g.measureText(B.name).width; g.font = `700 12px ${mono}`; const wc = info.no ? g.measureText('CASE').width + 8 + 26 : 0;
+    const w = pad + 28 + 9 + wn + (wc ? 10 + wc : 0) + pad, x = ir - w - 22, y = iy + 22;
+    g.fillStyle = 'rgba(10,10,10,.62)'; g.fillRect(x, y, w, h); mark(x + pad, y + 8, 28);
+    g.fillStyle = '#fff'; g.font = `700 20px ${cjk}`; g.textAlign = 'left'; g.fillText(B.name, x + pad + 37, y + h / 2 + 1);
+    if (info.no) { let cx = x + pad + 37 + wn + 10; g.font = `700 12px ${mono}`; g.fillStyle = B.accent; g.fillText('CASE', cx, y + h / 2 + 1); cx += g.measureText('CASE').width + 8; g.fillStyle = B.bg; g.fillRect(cx, y + 12, 26, 20); g.fillStyle = B.accent; g.textAlign = 'center'; g.fillText(info.no, cx + 13, y + h / 2 + 1); g.textAlign = 'left'; } }
+  // 底栏：左边标识 + 编号 + 标题，右边网址 + 技术标签；竖版放两行
+  const fit = (text, max) => { let s = text; while (s.length > 1 && g.measureText(s).width > max) s = s.slice(0, -2) + '…'; return s; };
+  const title = info.title + (info.sub ? ' · ' + info.sub : ''), tagLine = info.tags.join('  ·  ');
+  if (!tall) {
+    const y = ib + (ch - ib) / 2 + 2; let x = ix;
+    mark(x, y - 18, 36); x += 48; g.fillStyle = '#fff'; g.font = `700 24px ${cjk}`; g.fillText(B.name, x, y + 1); x += g.measureText(B.name).width + 22;
+    if (info.no) { g.save(); g.translate(x, y); g.transform(1, 0, -0.28, 1, 0, 0); g.fillStyle = B.accent; g.fillRect(-3, -17, 6, 34); g.restore(); x += 22; g.font = `700 20px ${mono}`; g.fillStyle = B.accent; const t2 = 'CASE ' + info.no; g.fillText(t2, x, y + 1); x += g.measureText(t2).width + 36; }
+    g.textAlign = 'right'; g.font = `700 15px ${mono}`; g.fillStyle = B.accent; g.fillText(B.site, ir, y - 9); const ws = g.measureText(tagLine).width;
+    g.font = `500 14px ${mono}`; g.fillStyle = '#8a8a8a'; g.fillText(fit(tagLine, iw * 0.4), ir, y + 11);
+    g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = `500 22px ${cjk}`; g.fillText(fit(title, ir - x - Math.min(ws, iw * 0.4) - 40), x, y + 1);
+  } else {
+    const y1 = ib + 46, y2 = ib + 98; let x = ix;
+    mark(x, y1 - 20, 40); x += 54; g.fillStyle = '#fff'; g.font = `700 28px ${cjk}`; g.fillText(B.name, x, y1 + 1); x += g.measureText(B.name).width + 22;
+    if (info.no) { g.save(); g.translate(x, y1); g.transform(1, 0, -0.28, 1, 0, 0); g.fillStyle = B.accent; g.fillRect(-3, -18, 6, 36); g.restore(); x += 22; g.font = `700 22px ${mono}`; g.fillStyle = B.accent; g.fillText('CASE ' + info.no, x, y1 + 1); }
+    g.textAlign = 'right'; g.font = `700 18px ${mono}`; g.fillStyle = B.accent; g.fillText(B.site, ir, y1 + 1);
+    g.font = `500 15px ${mono}`; g.fillStyle = '#8a8a8a'; const tg = fit(tagLine, iw * 0.42); g.fillText(tg, ir, y2 + 1); const wt = g.measureText(tg).width;
+    g.textAlign = 'left'; g.fillStyle = '#fff'; g.font = `500 26px ${cjk}`; g.fillText(fit(title, iw - wt - 30), ix, y2 + 1);
+  }
+  return new Promise((res, rej) => c.toBlob(async b => b ? res(Array.from(new Uint8Array(await b.arrayBuffer()))) : rej('水印图没画出来'), 'image/png'));
+}
+const wm = { scan: null, busy: false, cur: '', errs: {}, info: {} };
+function renderWm() {
+  const s = wm.scan; if (!s || !$('#wm').classList.contains('on')) return;
+  const todo = s.items.filter(i => !i.done).length, note = $('#wNote');
+  note.hidden = !!s.ffmpeg; note.textContent = s.ffmpeg ? '' : '这台电脑上没找到 ffmpeg，加水印要用它。装好（或放到 根目录/_tools 里）后再点同步。';
+  $('#wList').innerHTML = s.items.length ? `<div class="ann-sec">${s.items.map(i => {
+    const st = wm.cur === i.rel ? '正在生成…' : wm.errs[i.rel] ? '没成功' : i.done ? '已同步' : '待生成';
+    return `<div class="wm-row${wm.cur === i.rel ? ' busy' : ''}"><span>${esc(i.name)}</span><span class="st">${st}${wm.info[i.rel] ? ' · ' + wm.info[i.rel] : ''}</span><span class="sub">${esc(wm.errs[i.rel] || '无水印/' + i.rel)}</span></div>`; }).join('')}</div>`
+    : '<div class="set-info">「无水印」文件夹里还没有视频。把成片（mp4 / mov）放进去，再点刷新或同步。</div>';
+  const go = $('#wGo'); go.disabled = wm.busy || !s.ffmpeg || !todo; go.textContent = wm.busy ? '正在同步…' : todo ? `同步水印版（${todo} 个）` : '都同步好了';
+}
+async function wmSync({ auto = false } = {}) {
+  if (wm.busy || !root) return;
+  wm.busy = true;
+  try {
+    wm.scan = await invoke('wm_scan', { root, create: !auto });
+    const s = wm.scan, list = s.items.filter(i => !i.done && !(auto && wm.errs[i.rel]));
+    if (!s.ffmpeg || !list.length) return;
+    if (auto) toast(`正在后台给 ${list.length} 个案例视频加水印…`);
+    let n = 0, bad = 0;
+    for (const it of list) {
+      wm.cur = it.rel; delete wm.errs[it.rel]; renderWm();
+      try {
+        const [w, h] = await invoke('wm_probe', { root, src: it.src });
+        const key = wmPick(w, h), t = WM_TPL[key]; wm.info[it.rel] = key;
+        const overlay = await wmDraw(t, wmInfo(it));
+        await invoke('wm_render', { job: { root, rel: it.rel, overlay, ...t } });
+        it.done = true; n++;
+      } catch (e) { wm.errs[it.rel] = String(e); bad++; }
+    }
+    wm.cur = '';
+    toast(`水印版已同步 ${n} 个` + (bad ? `，${bad} 个没成功（点「案例视频」看原因）` : ''));
+  } catch (e) { if (!auto) toast('同步失败：' + e); }
+  finally { wm.busy = false; wm.cur = ''; renderWm(); }
+}
+// 每次扫描后顺带看一眼：有新放进来的就后台生成（设置里可以关）
+function wmAuto() { if (cfg.autoWm && root && !wm.busy) wmSync({ auto: true }); }
+async function openWm() {
+  if (!root) { pickRoot(); return; }
+  closeAll(); $('#scrim').classList.add('on'); $('#wm').classList.add('on');
+  try { if (!wm.busy) wm.scan = await invoke('wm_scan', { root, create: true }); } catch (e) { toast('读不到案例视频文件夹：' + e); }
+  renderWm();
+}
+$('#openWm').addEventListener('click', openWm);
+$('#wGo').addEventListener('click', () => wmSync());
+$('#wOpenSrc').addEventListener('click', () => wm.scan && invoke('reveal', { path: wm.scan.dir + '/无水印' }).catch(e => toast(String(e))));
+$('#wOpenOut').addEventListener('click', () => wm.scan && invoke('reveal', { path: wm.scan.dir + '/水印版' }).catch(e => toast(String(e))));
+
 function closeAll(keepScrim) {
-  $('#modal').classList.remove('on'); $('#drawer').classList.remove('on'); $('#ann').classList.remove('on'); $('#imp').classList.remove('on'); $('#set').classList.remove('on');
+  $('#modal').classList.remove('on'); $('#drawer').classList.remove('on'); $('#ann').classList.remove('on'); $('#imp').classList.remove('on'); $('#set').classList.remove('on'); $('#wm').classList.remove('on');
   closeConfirm(); closePop();
   if (!keepScrim) { $('#scrim').classList.remove('on'); ui.openId = null; }
 }
