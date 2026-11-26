@@ -1090,16 +1090,20 @@ const WM_TPL = {
 const WM_BRAND = { name: 'TD学长', site: 'TDXUEZHANG.COM', accent: '#C8FA1E', bg: '#0A0A0A' };
 const WM_MARK = (document.querySelector('header .logo path') || { getAttribute: () => '' }).getAttribute('d');
 const wmPick = (w, h) => Object.keys(WM_TPL).map(k => { const [a, b] = k.split(':').map(Number); return [Math.abs(Math.log((w / h) / (a / b))), k]; }).sort((x, y) => x[0] - y[0])[0][1];
-// 文件名 → 编号、标题、副标题：CASE01_手势寻宝_握拳收集
+// 文件名 → 编号、标题、副标题。两种写法都认：
+//   case06_pixel-gem_16x9_v2（官网用的规范写法：标题取同编号案例工程的名字）
+//   CASE01_手势寻宝_握拳收集（中文直接写在文件名里）
 function wmInfo(it) {
   let stem = it.name.replace(/[_\s-]*TD学长$/i, ''), no = '';
   const m = stem.match(/^CASE[\s_-]*(\d+)[\s_-]*(.*)$/i);
   if (m) { no = m[1].padStart(2, '0'); stem = m[2]; }
-  const parts = stem.split('_').map(x => x.trim()).filter(Boolean);
-  // 同编号的案例工程有标签的话，拿来当右下角的技术标签
+  const parts = stem.split('_').map(x => x.trim()).filter(x => x && !/^(16x9|9x16|3x4|4x3|v\d+)$/i.test(x));
   const proj = no && projects.find(p => new RegExp('^CASE[\\s_-]*0*' + Number(no) + '(\\D|$)', 'i').test(p.folder || ''));
+  // 同编号的案例工程有标签的话，拿来当右下角的技术标签
   const tags = (proj && proj.tags.length ? proj.tags.slice(0, 3) : ['TouchDesigner']).map(t => t.toUpperCase());
-  return { no, title: parts[0] || it.name, sub: parts.slice(1).join(' '), tags };
+  const ascii = !/[^\x00-\x7f]/.test(parts.join(''));
+  if (proj && ascii) return { no, title: proj.name || parts[0] || it.name, sub: '', tags };
+  return { no, title: (parts[0] || it.name).replace(/-/g, ascii ? ' ' : '-'), sub: parts.slice(1).join(' '), tags };
 }
 function wmDraw(t, info) {
   const c = document.createElement('canvas'); c.width = t.cw; c.height = t.ch;
