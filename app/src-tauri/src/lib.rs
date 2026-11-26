@@ -1836,15 +1836,29 @@ mod tests {
         assert!(create_project_at(r.clone(), "坏的".into(), "坏的".into(), "x".into(), None, None, bad, false).is_err());
         assert!(!root.join("坏的").exists());
         // 规范检查
-        let chk = check_case(c.path.clone());
+        let chk = check_case(c.path.clone(), None);
         let get = |l: &str| chk.iter().find(|x| x.label == l).unwrap().ok;
-        assert!(get("有说明文档") && get("素材在工程里"));
-        assert!(!get("有演示视频") && !get("工程文件在第一层") && !get("标注完整"));
+        assert!(get("有说明文档"));
+        assert!(!get("有演示视频") && !get("工程文件在第一层，只有一个") && !get("标注完整") && !get("素材在工程里"), "assets 是空的不算");
+        fs::write(dir.join("assets/images/a.png"), b"p").unwrap();
         fs::write(dir.join("demo/演示.mp4"), b"v").unwrap();
         fs::write(dir.join("测试.toe"), b"t").unwrap();
         save_meta(c.path.clone(), json!({"tags": ["手势"], "note": "一句话"})).unwrap();
-        let chk = check_case(c.path.clone());
+        let chk = check_case(c.path.clone(), None);
         assert!(chk.iter().filter(|x| x.label != "有预览图").all(|x| x.ok));
+        // 定制工程的清单；第一层多一个别的 .toe 就不算「只有一个」
+        let ord = check_case(c.path.clone(), Some("order".into()));
+        let og = |l: &str| ord.iter().find(|x| x.label == l).unwrap().ok;
+        assert!(og("工程文件在第一层，只有一个") && !og("标注完整") && !og("deliver 里留了压缩包"));
+        assert!(ord.iter().all(|x| x.label != "有演示视频"));
+        save_meta(c.path.clone(), json!({"slug": "test", "version": "1.0", "tdVersion": "2025.1"})).unwrap();
+        fs::create_dir_all(dir.join("deliver")).unwrap();
+        fs::write(dir.join("deliver/test_v1.0_20261126.zip"), b"z").unwrap();
+        fs::write(dir.join("实验.toe"), b"t").unwrap();
+        fs::write(dir.join("测试.3.toe"), b"t").unwrap();
+        let ord = check_case(c.path.clone(), Some("order".into()));
+        let og = |l: &str| ord.iter().find(|x| x.label == l).unwrap().ok;
+        assert!(og("标注完整") && og("deliver 里留了压缩包") && !og("工程文件在第一层，只有一个"));
         // save_meta 不会把组件清单冲掉
         assert!(read_meta(&dir).unwrap()["components"].is_array());
         let _ = fs::remove_dir_all(&base);
@@ -1971,25 +1985,45 @@ struct CaseCheck {
     hint: String,
 }
 
-/// 按《案例工程规范》逐条检查一个工程文件夹，只看文件夹这一层能看出来的东西
+/// 按《工程规范》第 10 节逐条检查一个工程文件夹，只看文件夹这一层能看出来的东西。
+/// kind 是 "order" 时按定制工程查，否则按案例工程查
 #[tauri::command]
-fn check_case(path: String) -> Vec<CaseCheck> {
+fn check_case(path: String, kind: Option<String>) -> Vec<CaseCheck> {
     let dir = PathBuf::from(path);
+    let order = kind.as_deref() == Some("order");
     let files: Vec<String> = fs::read_dir(&dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect()).unwrap_or_default();
     let has = |names: &[&str]| files.iter().any(|f| names.iter().any(|n| f == n));
     let demo = fs::read_dir(dir.join("demo")).map(|rd| rd.flatten().any(|e| is_video(&e.path()))).unwrap_or(false);
     let meta = read_meta(&dir).unwrap_or(Value::Null);
+    let filled = |k: &str| !meta_str(&meta, k).is_empty();
     let tagged = meta.get("tags").and_then(|t| t.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
-    let noted = meta.get("note").and_then(|t| t.as_str()).map(|a| !a.trim().is_empty()).unwrap_or(false);
+    // 第一层有几个不同名字的 .toe（同一个文件的不同版本算一个）
+    let mut bases: Vec<String> = toes_in(&dir).into_iter().map(|t| t.base).collect();
+    bases.sort();
+    bases.dedup();
+    // assets 里（含子文件夹）至少有一个文件
+    fn any_file(d: &Path, depth: usize) -> bool {
+        fs::read_dir(d).map(|rd| rd.flatten().any(|e| if e.path().is_dir() { depth < 4 && any_file(&e.path(), depth + 1) } else { system_junk(&e.file_name().to_string_lossy()).is_none() })).unwrap_or(false)
+    }
+    let packed = fs::read_dir(dir.join("deliver")).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().to_lowercase().ends_with(".zip"))).unwrap_or(false);
+    let thumb = has(&["thumb.jpg", "thumb.png", "cover.jpg", "cover.png"]) || meta.get("thumbFile").and_then(|t| t.as_str()).map(|t| t.len() > 1).unwrap_or(false);
     let item = |label: &str, ok: bool, hint: &str| CaseCheck { label: label.into(), ok, hint: hint.into() };
-    vec![
-        item("工程文件在第一层", !toes_in(&dir).is_empty(), "把主 .toe 放在工程文件夹第一层，买家打开文件夹就能看到"),
+    let toe_hint = if bases.len() > 1 { "第一层有不止一个工程文件，只留主 .toe，别的挪走" } else { "把主 .toe 放在工程文件夹第一层" };
+    let mut out = vec![
+        item("工程文件在第一层，只有一个", bases.len() == 1, toe_hint),
         item("有说明文档", has(&["readme.md", "readme.txt", "使用说明.md", "使用说明.txt"]), "第一层放一份 README.md：运行环境、依赖、怎么操作、能改哪些参数"),
-        item("有演示视频", demo, "把成片放进 demo 文件夹（mp4 / mov）"),
-        item("有预览图", has(&["thumb.jpg", "thumb.png", "cover.jpg", "cover.png"]) || meta.get("thumbFile").and_then(|t| t.as_str()).map(|t| t.len() > 1).unwrap_or(false), "用 TD 打开保存一次，或在详情里选一张图"),
-        item("素材在工程里", dir.join("assets").is_dir(), "用到的图片、视频、模型都放进 assets，路径用相对路径"),
-        item("标注完整", tagged && noted, "在详情里填上标签和一句话备注，买家一眼知道这是什么"),
-    ]
+        item("素材在工程里", any_file(&dir.join("assets"), 0), "用到的图片、视频、模型都放进 assets，路径用相对路径"),
+    ];
+    if order {
+        out.push(item("标注完整", filled("slug") && filled("version") && filled("tdVersion"), "在下面填好英文项目名、工程版本、TD 版本"));
+        out.push(item("有预览图", thumb, "用 TD 打开保存一次，或在详情里选一张图"));
+        out.push(item("deliver 里留了压缩包", packed, "交付时点「打包交付」，压缩包会留一份在 deliver 文件夹"));
+    } else {
+        out.push(item("标注完整", tagged && filled("note"), "在详情里填上标签和一句话备注，买家一眼知道这是什么"));
+        out.push(item("有预览图", thumb, "用 TD 打开保存一次，或在详情里选一张图"));
+        out.push(item("有演示视频", demo, "把成片放进 demo 文件夹（mp4 / mov）"));
+    }
+    out
 }
 
 /* ================= 案例演示视频加水印 ================= */

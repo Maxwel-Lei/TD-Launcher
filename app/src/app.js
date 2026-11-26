@@ -1141,9 +1141,14 @@ async function renderCase(p) {
   const m = p.meta || {};
   const txt = (key, label, ph, val, lock) => `<div class="field"><label>${label}</label><input class="inp${/Id|slug|Version|version/.test(key) ? ' mono' : ''}" type="text" data-case="${key}" placeholder="${esc(ph)}" value="${esc(val == null ? '' : val)}"${lock ? ' disabled' : ''}></div>`;
   if (type === 'order') {
+    let olist = [];
+    try { olist = await invoke('check_case', { path: p.path, kind: 'order' }); } catch (e) {}
+    if (ui.openId !== p.id) return;
+    const on = olist.filter(x => x.ok).length;
     box.hidden = false;
-    box.innerHTML = `<div class="fl"><span>交付信息</span><span class="label">定制工程</span></div>
-      <div class="case-form">${txt('slug', '英文项目名', 'four-relics', m.slug)}${txt('version', '工程版本', '1.0', m.version)}${txt('tdVersion', 'TD 版本', '2025.33230', m.tdVersion)}${txt('orderId', '官网订单号', 'TDX-1126-9404，有就填', m.orderId)}</div>
+    box.innerHTML = `<div class="fl"><span>交付检查</span><span class="label">${on} / ${olist.length} · 定制工程</span></div>
+      <ul class="case-list">${olist.map(x => `<li class="${x.ok ? 'yes' : 'no'}"><span>${x.ok ? '✓' : '○'}</span><span>${esc(x.label)}</span>${x.ok ? '' : `<small>${esc(x.hint)}</small>`}</li>`).join('')}</ul>
+      <div class="case-form" style="margin-top:12px">${txt('slug', '英文项目名', 'four-relics', m.slug)}${txt('version', '工程版本', '1.0', m.version)}${txt('tdVersion', 'TD 版本', '2025.33230', m.tdVersion)}${txt('orderId', '官网订单号', 'TDX-1126-9404，有就填', m.orderId)}</div>
       <div class="theme-acts" style="margin-top:8px"><button class="btn text" type="button" data-case-act="pack">打包交付</button><small style="font-size:12px;color:var(--mute)">存到工程的 deliver 文件夹，不带 project.json、docs、Backup</small></div>`;
     return;
   }
@@ -1213,7 +1218,7 @@ $('#dCase').addEventListener('click', async e => {
   try {
     if (act === 'pack') {
       const r = await invoke('pack_order', { path: p.path, date: today() });
-      toast(`已打包 ${fmtMB(r.size)}，在 deliver 文件夹里`); invoke('reveal', { path: r.path }).catch(() => {});
+      toast(`已打包 ${fmtMB(r.size)}，在 deliver 文件夹里`); invoke('reveal', { path: r.path }).catch(() => {}); renderCase(p);
     } else if (act === 'web') {
       const issues = caseWebIssues(p);
       if (issues.length) { toast(`官网信息还差 ${issues.length} 项，先补齐`); return; }
