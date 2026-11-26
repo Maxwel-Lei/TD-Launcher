@@ -231,6 +231,7 @@ async function scan({ quiet = false } = {}) {
   render();
   if (ui.openId) { const p = cur(); if (p) refreshDetailHead(p); else closeAll(); }
   if (cfg.folderIcon) syncIcons(true, true);
+  fillTypes();
   wmAuto();
 }
 
@@ -362,6 +363,7 @@ function render() { renderSide(); renderView(); syncSel(); }
 const BAD = /[:?*\/\\<>|"]/g;
 function folderName() {
   const base = $('#npName').value.trim().replace(/[. ]+$/, '');
+  if ($('#npCase') && $('#npCase').checked) return { base, folder: `CASE${String(nextCaseNo()).padStart(2, '0')}_${base}` };
   return { base, folder: ($('#npDate').checked ? today() + '_' : '') + base };
 }
 // 工程模板：'' 是自带的默认模板，其它是"模板文件夹"里自己做的
@@ -408,6 +410,13 @@ $('#npCreate').addEventListener('click', async () => {
     const components = (comps || []).filter(c => compSel.has(c.id)).map(c => ({ name: c.name, src: c.src, load: c.load || [] }));
     if (components.some(c => /mediapipe/i.test(c.name + c.src))) toast('正在复制组件，Mediapipe 比较大，要等几秒…');
     const res = await invoke('create_project', { root: cat ? root + '/' + cat : root, folder, name: base, created: today(), template: tplSel || null, components, case: $('#npCase').checked });
+    // 类型和编号记进 project.json：案例工程自动取下一个没用过的编号
+    const isCaseNew = $('#npCase').checked, kind = isCaseNew ? 'case' : /商单|交付/.test(cat) ? 'order' : '';
+    if (kind) {
+      const extra = { type: kind };
+      if (isCaseNew) { const no = nextCaseNo(); extra.caseId = 'case' + String(no).padStart(2, '0'); try { localStorage.setItem('caseHigh', String(no)); } catch (e) {} }
+      await invoke('save_meta', { path: res.path, meta: extra }).catch(() => {});
+    }
     closeAll();
     await scan({ quiet: true });
     if (res.toe && !cfg.autoOpen) {
@@ -1066,7 +1075,8 @@ function renderCats() {
   $('#npCat').innerHTML = `<option value="">（根目录）</option>` + cats.map(c => `<option value="${esc(c)}"${c === last ? ' selected' : ''}>${esc(c)}</option>`).join('');
   $('#npCase').checked = /案例/.test($('#npCat').value);
 }
-$('#npCat').addEventListener('change', e => { try { localStorage.setItem('newCat', e.target.value); } catch (er) {} $('#npCase').checked = /案例/.test(e.target.value); });
+$('#npCat').addEventListener('change', e => { try { localStorage.setItem('newCat', e.target.value); } catch (er) {} $('#npCase').checked = /案例/.test(e.target.value); updateTree(); });
+$('#npCase').addEventListener('change', updateTree);
 
 /* ================= 案例工程规范检查（详情里，只对「案例」分类下的工程显示） ================= */
 // 官网用的分类：取值固定，和官网报价的档位一致（见《案例工程规范》8.3）
@@ -1079,40 +1089,79 @@ const CASE_OPTS = {
 const CASE_BAN = ['毕设', '课设', '代做', '代写'];
 const listOf = v => String(v || '').split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean);
 const isCase = p => /案例/.test(topGroup(p)) || /^CASE\d/i.test(p.folder || '');
-// 官网后台会拒收的问题，先在这里查一遍
+// 工程类型（规范 v2.0）：case 案例工程 / order 定制工程。没写的按所在分类猜，个人作品之类不算这两种
+const projType = p => (p.meta && (p.meta.type === 'case' || p.meta.type === 'order') && p.meta.type) || (isCase(p) ? 'case' : /商单|交付/.test(topGroup(p)) ? 'order' : '');
+// 已经标注过、但还没写类型的工程，补上（只补一次，写不进去就算了）
+const typeTried = new Set();
+function fillTypes() {
+  for (const p of projects) {
+    const t = projType(p);
+    if (!t || !p.hasMeta || (p.meta && p.meta.type) || typeTried.has(p.path)) continue;
+    typeTried.add(p.path); p.meta = { ...(p.meta || {}), type: t };
+    invoke('save_meta', { path: p.path, meta: { type: t } }).catch(() => {});
+  }
+}
+// 下一个没用过的案例编号：现有工程用过的、以前发过的（哪怕工程已删、已下架）都算用过
+function nextCaseNo() {
+  let hi = 0; try { hi = Number(localStorage.getItem('caseHigh')) || 0; } catch (e) {}
+  for (const p of projects) {
+    const a = ((p.meta && p.meta.caseId || '').match(/^case(\d+)$/) || [])[1], b = ((p.folder || '').match(/^CASE[\s_-]*(\d+)/i) || [])[1];
+    hi = Math.max(hi, Number(a) || 0, Number(b) || 0);
+  }
+  return hi + 1;
+}
+const VER_RE = /^\d+\.\d+$/;
+// 官网后台会拒收的问题，先在这里查一遍（规则同官网对接文档 2.4）
 function caseWebIssues(p) {
-  const m = p.meta || {}, out = [];
+  const m = p.meta || {}, out = [], len = v => [...String(v || '')].length;
   if (!/^case\d{2,}$/.test(m.caseId || '')) out.push('编号要写成 case06 这样');
   if (!/^[a-z0-9]+(-[a-z0-9]+){0,3}$/.test(m.slug || '')) out.push('英文短名只用小写英文和数字，词之间用连字符，最多 4 个词');
-  if (!p.name || [...p.name].length > 12) out.push('标题要在 12 个字以内');
-  if (!m.subtitle) out.push('还没有副标题');
-  if (!p.note || [...p.note].length > 60) out.push('备注（简介）要填，60 个字以内');
-  if (!p.tags.length) out.push('还没有技术标签');
+  if (!p.name || len(p.name) > 12) out.push('标题要在 12 个字以内');
+  if (!m.subtitle || len(m.subtitle) > 40) out.push('副标题必填，40 个字以内');
+  if (!p.note || len(p.note) > 60) out.push('备注（简介）要填，60 个字以内');
+  if (!p.tags.length) out.push('至少要有 1 个技术标签');
   if (!m.tdVersion) out.push('还没填 TD 版本号');
-  if (!(Array.isArray(m.interact) && m.interact.length) || !m.visual) out.push('交互方式和视觉类型没选，官网没法判断它和客户的需求像不像');
+  if (!VER_RE.test(m.version || '')) out.push('工程版本要写成 1.0 这样');
+  for (const k of ['visual', 'output', 'platform']) if (m[k] && !CASE_OPTS[k].some(o => o[0] === m[k])) out.push(`${k} 的值官网不认识：${m[k]}`);
+  if ((m.interact || []).some(v => !CASE_OPTS.interact.some(o => o[0] === v))) out.push('interact 里有官网不认识的值');
   const text = [p.name, m.subtitle, p.note, ...(m.keywords || [])].join(' '), hit = CASE_BAN.filter(w => text.includes(w));
   if (hit.length) out.push(`文案里有不能出现的词：${hit.join('、')}`);
   if (m.fromOrder && !m.clientConsent) out.push('来自定制单，还没确认客户同意，官网不会公开');
   return out;
 }
+// 不拦着上传、但会影响效果的
+function caseWebHints(p) {
+  const m = p.meta || {};
+  return !(Array.isArray(m.interact) && m.interact.length) || !m.visual ? ['交互方式和视觉类型没选：能上传，但不会出现在官网对话的「类似这种」里'] : [];
+}
+const fmtMB = b => (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + ' MB';
 async function renderCase(p) {
-  const box = $('#dCase');
-  if (!isCase(p)) { box.hidden = true; return; }
+  const box = $('#dCase'), type = projType(p);
+  if (!type) { box.hidden = true; return; }
+  const m = p.meta || {};
+  const txt = (key, label, ph, val, lock) => `<div class="field"><label>${label}</label><input class="inp${/Id|slug|Version|version/.test(key) ? ' mono' : ''}" type="text" data-case="${key}" placeholder="${esc(ph)}" value="${esc(val == null ? '' : val)}"${lock ? ' disabled' : ''}></div>`;
+  if (type === 'order') {
+    box.hidden = false;
+    box.innerHTML = `<div class="fl"><span>交付信息</span><span class="label">定制工程</span></div>
+      <div class="case-form">${txt('slug', '英文项目名', 'four-relics', m.slug)}${txt('version', '工程版本', '1.0', m.version)}${txt('tdVersion', 'TD 版本', '2025.33230', m.tdVersion)}</div>
+      <div class="theme-acts" style="margin-top:8px"><button class="btn text" type="button" data-case-act="pack">打包交付</button><small style="font-size:12px;color:var(--mute)">存到工程的 deliver 文件夹，不带 project.json、docs、Backup</small></div>`;
+    return;
+  }
   let list = [];
   try { list = await invoke('check_case', { path: p.path }); } catch (e) { box.hidden = true; return; }
   if (ui.openId !== p.id) return;
-  const n = list.filter(x => x.ok).length, m = p.meta || {};
+  const n = list.filter(x => x.ok).length;
   const guess = ((p.folder || '').match(/^CASE[\s_-]*(\d+)/i) || [])[1];
   const sel = (key, cur) => `<select class="inp" data-case="${key}"><option value="">（没选）</option>${CASE_OPTS[key].map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
-  const txt = (key, label, ph, val) => `<div class="field"><label>${label}</label><input class="inp${/Id|slug|Version|version/.test(key) ? ' mono' : ''}" type="text" data-case="${key}" placeholder="${esc(ph)}" value="${esc(val == null ? '' : val)}"></div>`;
-  const issues = caseWebIssues(p);
+  const issues = caseWebIssues(p), hints = caseWebHints(p), lock = !!m.webPackedAt;
   box.hidden = false;
   box.innerHTML = `<div class="fl"><span>案例工程规范</span><span class="label">${n} / ${list.length}${n === list.length ? ' · 可以交付' : ''}</span></div>
     <ul class="case-list">${list.map(x => `<li class="${x.ok ? 'yes' : 'no'}"><span>${x.ok ? '✓' : '○'}</span><span>${esc(x.label)}</span>${x.ok ? '' : `<small>${esc(x.hint)}</small>`}</li>`).join('')}</ul>
-    <div class="fl" style="margin-top:14px"><span>官网信息</span><span class="label" id="dCaseWeb">${issues.length ? `还差 ${issues.length} 项` : '可以上传官网'}</span></div>
+    <div class="fl" style="margin-top:14px"><span>官网信息</span><span class="label" id="dCaseWeb"></span></div>
     <div class="case-form">
-      ${txt('caseId', '编号', guess ? 'case' + guess.padStart(2, '0') : 'case06', m.caseId)}${txt('slug', '英文短名', 'pixel-gem', m.slug)}
-      ${txt('subtitle', '副标题', '一句话说清交互方式', m.subtitle)}
+      ${txt('caseId', '编号', guess ? 'case' + guess.padStart(2, '0') : 'case06', m.caseId, lock)}${txt('slug', '英文短名', 'pixel-gem', m.slug, lock)}
+      ${lock ? `<div class="field wide"><small style="font-size:12px;color:var(--mute)">已经准备过官网上传包，编号和短名锁住了：它们是官网的网址，改了官网会当成一个新案例。<button type="button" class="linkish" data-case-act="unlock">仍要修改</button></small></div>` : ''}
+      ${txt('subtitle', '副标题（40 字以内）', '一句话说清交互方式', m.subtitle)}
       ${txt('tdVersion', 'TD 版本', '2025.33230', m.tdVersion)}${txt('version', '工程版本', '1.0', m.version)}
       <div class="field wide"><label>交互方式（可多选）</label><div class="case-checks">${CASE_OPTS.interact.map(([v, l]) => `<label class="chk"><input type="checkbox" data-case-int="${v}"${(m.interact || []).includes(v) ? ' checked' : ''}><span>${esc(l)}</span></label>`).join('')}</div></div>
       <div class="field"><label>视觉类型</label>${sel('visual', m.visual)}</div><div class="field"><label>输出</label>${sel('output', m.output)}</div>
@@ -1124,7 +1173,15 @@ async function renderCase(p) {
         <label class="chk"${m.fromOrder ? '' : ' hidden'} id="dCaseConsent"><input type="checkbox" data-case="clientConsent"${m.clientConsent ? ' checked' : ''}><span>客户已同意，且已换掉客户素材</span></label>
       </div></div>
     </div>
-    <ul class="case-list" id="dCaseIssues">${issues.map(x => `<li class="no"><span>○</span><span>${esc(x)}</span></li>`).join('')}</ul>`;
+    <ul class="case-list" id="dCaseIssues"></ul>
+    <div class="theme-acts" style="margin-top:8px"><button class="btn text" type="button" data-case-act="web">准备官网上传包</button><small style="font-size:12px;color:var(--mute)">生成到 根目录/_官网上传，只放水印版视频</small></div>`;
+  paintCaseIssues(p);
+}
+function paintCaseIssues(p) {
+  const issues = caseWebIssues(p), hints = caseWebHints(p);
+  if (!$('#dCaseWeb')) return;
+  $('#dCaseWeb').textContent = issues.length ? `还差 ${issues.length} 项` : '信息齐了';
+  $('#dCaseIssues').innerHTML = issues.map(x => `<li class="no"><span>○</span><span>${esc(x)}</span></li>`).join('') + hints.map(x => `<li class="no"><span>·</span><span>${esc(x)}</span></li>`).join('');
 }
 $('#dCase').addEventListener('change', async e => {
   const p = cur(), t = e.target; if (!p) return;
@@ -1133,16 +1190,45 @@ $('#dCase').addEventListener('change', async e => {
   else if (t.dataset.case) {
     const k = t.dataset.case;
     patch[k] = t.type === 'checkbox' ? t.checked : k === 'keywords' ? listOf(t.value).slice(0, 8) : k === 'devices' ? listOf(t.value) : k === 'caseId' || k === 'slug' ? t.value.trim().toLowerCase() : t.value.trim();
+    // 版本号只收「主.次」
+    if (k === 'version' && patch[k] && !VER_RE.test(patch[k])) { toast('工程版本要写成 1.0 这样（主.次）'); t.value = m.version || ''; return; }
     if (k === 'caseId' || k === 'slug') t.value = patch[k];
     if (k === 'fromOrder') { $('#dCaseConsent').hidden = !t.checked; if (!t.checked) patch.clientConsent = false; }
   } else return;
-  // 平台没动过也一起记下默认值，官网读的时候就不用猜
-  if (!m.platform && !patch.platform) patch.platform = 'td';
+  // 类型、平台没动过也一起记下，官网读的时候就不用猜
+  const type = projType(p);
+  if (!m.type && type) patch.type = type;
+  if (type === 'case' && !m.platform && !patch.platform) patch.platform = 'td';
   Object.assign(m, patch);
   try { await invoke('save_meta', { path: p.path, meta: patch }); saved(); } catch (er) { toast('没保存上：' + er); }
-  const issues = caseWebIssues(p);
-  $('#dCaseWeb').textContent = issues.length ? `还差 ${issues.length} 项` : '可以上传官网';
-  $('#dCaseIssues').innerHTML = issues.map(x => `<li class="no"><span>○</span><span>${esc(x)}</span></li>`).join('');
+  paintCaseIssues(p);
+});
+$('#dCase').addEventListener('click', async e => {
+  const act = e.target.dataset && e.target.dataset.caseAct, p = cur(); if (!act || !p) return;
+  if (act === 'unlock') {
+    confirmBox({ label: 'Warning', title: '修改编号或短名？', html: '它们是这个案例在官网的网址。改了以后再上传，官网会把它当成一个<b>新案例</b>，原来的那个还留在官网上。', yes: '仍要修改', onYes: async () => { p.meta = { ...p.meta, webPackedAt: '' }; await invoke('save_meta', { path: p.path, meta: { webPackedAt: '' } }).catch(() => {}); renderCase(p); } });
+    return;
+  }
+  const btn = e.target; btn.disabled = true;
+  try {
+    if (act === 'pack') {
+      const r = await invoke('pack_order', { path: p.path, date: today() });
+      toast(`已打包 ${fmtMB(r.size)}，在 deliver 文件夹里`); invoke('reveal', { path: r.path }).catch(() => {});
+    } else if (act === 'web') {
+      const issues = caseWebIssues(p);
+      if (issues.length) { toast(`官网信息还差 ${issues.length} 项，先补齐`); return; }
+      toast('正在准备官网上传包，工程大的话要等一会儿…');
+      const r = await invoke('web_pack', { root, path: p.path });
+      const at = new Date().toISOString();
+      p.meta = { ...p.meta, webPackedAt: at }; await invoke('save_meta', { path: p.path, meta: { webPackedAt: at } }).catch(() => {});
+      confirmBox({ label: 'Ready', title: '官网上传包准备好了', html: `共 ${r.files.length} 个文件：<br>${r.files.map(esc).join('<br>')}<br><br>${r.notes.map(esc).join('<br>')}<br><br>把整个文件夹拖进官网后台就行。`, yes: '打开文件夹', onYes: () => invoke('reveal', { path: r.dir + '/project.json' }).catch(() => {}) });
+      renderCase(p);
+    }
+  } catch (er) {
+    const lines = String(er).split('\n');
+    if (lines.length > 1 || act === 'web') confirmBox({ label: 'Not ready', title: '还不能生成', html: lines.map(esc).join('<br>'), yes: '知道了', onYes: () => {} });
+    else toast(String(er));
+  } finally { btn.disabled = false; }
 });
 
 /* ================= 案例视频水印 ================= */
@@ -1207,14 +1293,21 @@ function wmDraw(t, info) {
   }
   return new Promise((res, rej) => c.toBlob(async b => b ? res(Array.from(new Uint8Array(await b.arrayBuffer()))) : rej('水印图没画出来'), 'image/png'));
 }
-const wm = { scan: null, busy: false, cur: '', errs: {}, info: {} };
+const wm = { scan: null, busy: false, cur: '', curWhat: '', errs: {}, info: {}, at: 3 };
 function renderWm() {
   const s = wm.scan; if (!s || !$('#wm').classList.contains('on')) return;
   const todo = s.items.filter(i => !i.done).length, note = $('#wNote');
   note.hidden = !!s.ffmpeg; note.textContent = s.ffmpeg ? '' : '这台电脑上没找到 ffmpeg，加水印要用它。装好（或放到 根目录/_tools 里）后再点同步。';
+  const webName = n => /^case\d{2,}_[a-z0-9]+(-[a-z0-9]+){0,3}_(16x9|9x16|3x4|4x3)(_v\d+)?$/.test(n);
   $('#wList').innerHTML = s.items.length ? `<div class="ann-sec">${s.items.map(i => {
-    const st = wm.cur === i.rel ? '正在生成…' : wm.errs[i.rel] ? '没成功' : i.done ? '已同步' : '待生成';
-    return `<div class="wm-row${wm.cur === i.rel ? ' busy' : ''}"><span>${esc(i.name)}</span><span class="st">${st}${wm.info[i.rel] ? ' · ' + wm.info[i.rel] : ''}</span><span class="sub">${esc(wm.errs[i.rel] || '无水印/' + i.rel)}</span></div>`; }).join('')}</div>`
+    const big = i.done && i.size > 30 * 1048576, busy = wm.cur === i.rel;
+    const st = busy ? (wm.curWhat || '正在生成…') : wm.errs[i.rel] ? '没成功' : i.done ? '已同步' : '待生成';
+    const notes = [wm.errs[i.rel] || '无水印/' + i.rel];
+    if (i.done) { notes.push(fmtMB(i.size) + (big ? '，超过官网的 30 MB' : '')); if (!i.poster) notes.push('还没有封面'); }
+    if (!webName(i.name)) notes.push('文件名不是官网要的写法，不会进上传包');
+    const acts = i.done && !wm.busy ? `${big ? `<button type="button" class="linkish" data-wm-shrink="${esc(i.rel)}">压到 30 MB 以内</button>` : ''}<button type="button" class="linkish" data-wm-poster="${esc(i.rel)}">${i.poster ? '换封面' : '生成封面'}</button>` : '';
+    return `<div class="wm-row${busy ? ' busy' : ''}"><span>${esc(i.name)}</span><span class="st">${st}${wm.info[i.rel] ? ' · ' + wm.info[i.rel] : ''}</span><span class="sub">${esc(notes.join(' · '))}</span>${acts ? `<span class="sub acts">${acts}</span>` : ''}</div>`; }).join('')}</div>
+    <label class="wm-at">封面取视频的第 <input class="inp mono" id="wAt" type="number" min="0" step="0.5" value="${wm.at}"> 秒</label>`
     : '<div class="set-info">「无水印」文件夹里还没有视频。把成片（mp4 / mov）放进去，再点刷新或同步。</div>';
   const go = $('#wGo'); go.disabled = wm.busy || !s.ffmpeg || !todo; go.textContent = wm.busy ? '正在同步…' : todo ? `同步水印版（${todo} 个）` : '都同步好了';
 }
@@ -1252,6 +1345,18 @@ async function openWm() {
 }
 $('#openWm').addEventListener('click', openWm);
 $('#wGo').addEventListener('click', () => wmSync());
+$('#wList').addEventListener('change', e => { if (e.target.id === 'wAt') wm.at = Math.max(0, Number(e.target.value) || 0); });
+$('#wList').addEventListener('click', async e => {
+  const d = e.target.dataset || {}, rel = d.wmShrink || d.wmPoster; if (!rel || wm.busy) return;
+  wm.busy = true; wm.cur = rel; wm.curWhat = d.wmShrink ? '正在压缩…' : '正在取封面…'; delete wm.errs[rel]; renderWm();
+  try {
+    if (d.wmShrink) { const size = await invoke('wm_shrink', { root, rel }); await invoke('wm_poster', { root, rel, at: wm.at }).catch(() => {}); toast(`压好了，现在 ${fmtMB(size)}`); }
+    else { await invoke('wm_poster', { root, rel, at: wm.at }); toast(`封面已换成第 ${wm.at} 秒的画面`); }
+  } catch (er) { wm.errs[rel] = String(er); }
+  wm.busy = false; wm.cur = ''; wm.curWhat = '';
+  try { wm.scan = await invoke('wm_scan', { root, create: false }); } catch (er) {}
+  renderWm();
+});
 $('#wOpenSrc').addEventListener('click', () => wm.scan && invoke('reveal', { path: wm.scan.dir + '/无水印' }).catch(e => toast(String(e))));
 $('#wOpenOut').addEventListener('click', () => wm.scan && invoke('reveal', { path: wm.scan.dir + '/水印版' }).catch(e => toast(String(e))));
 

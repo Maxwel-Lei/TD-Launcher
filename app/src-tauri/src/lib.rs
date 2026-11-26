@@ -1864,6 +1864,79 @@ mod tests {
         assert_eq!(parse_size("Stream #0:1: Audio: aac, 48000 Hz"), None);
         let _ = fs::remove_dir_all(&root);
     }
+    #[test]
+    fn pack_and_web() {
+        let root = tmp("pack");
+        let dir = root.join("02_案例工程/CASE06_Pixel Gem");
+        for d in ["assets/images", "tox", "scripts", "demo", "export", "Backup", "docs", "deliver"] {
+            fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        for (f, c) in [("PixelGem.toe", "t"), ("PixelGem.3.toe", "old"), ("Other.toe", "o"), ("README.md", "r"), ("thumb.jpg", "j"), ("assets/images/a.png", "p"), ("tox/x.tox", "x"), ("demo/raw.mp4", "v"), ("export/e.mov", "e"), ("Backup/b.toe", "b"), ("docs/报价.txt", "d"), ("assets/project.json", "{}")] {
+            fs::write(dir.join(f), c).unwrap();
+        }
+        fs::write(dir.join("project.json"), r#"{"name":"像素宝石","caseId":"case06","slug":"pixel-gem","version":"1.0","mainToe":"PixelGem"}"#).unwrap();
+        let names = |p: &Path| -> Vec<String> {
+            let mut z = zip::ZipArchive::new(fs::File::open(p).unwrap()).unwrap();
+            let mut v: Vec<String> = (0..z.len()).map(|i| z.by_index(i).unwrap().name().to_string()).collect();
+            v.sort();
+            v
+        };
+        // 定制单打包
+        let p = pack_order(dir.to_string_lossy().to_string(), "2026-11-26".into()).unwrap();
+        assert!(p.path.replace('\\', "/").ends_with("deliver/pixel-gem_v1.0_20261126.zip"));
+        let n = names(Path::new(&p.path));
+        let top = "pixel-gem_v1.0_20261126";
+        assert_eq!(n, vec![format!("{top}/PixelGem.toe"), format!("{top}/README.md"), format!("{top}/assets/images/a.png"), format!("{top}/tox/x.tox")], "{:?}", n);
+        // 官网上传包：没有水印版视频 → 不生成
+        let r = root.to_string_lossy().to_string();
+        let e = web_pack(r.clone(), dir.to_string_lossy().to_string()).err().unwrap();
+        assert!(e.contains("没有这个案例的视频"), "{}", e);
+        assert!(!root.join("_官网上传").exists());
+        // 放一个假的 faststart H.264 mp4 + 封面，再放一个名字不对的和一个无水印的
+        let mut mp4: Vec<u8> = Vec::new();
+        mp4.extend(&16u32.to_be_bytes()); mp4.extend(b"ftypisom\0\0\0\0isom"[..12].iter());
+        let moov_body = b"....avc1....";
+        mp4.extend(&((8 + moov_body.len()) as u32).to_be_bytes()); mp4.extend(b"moov"); mp4.extend(moov_body);
+        mp4.extend(&12u32.to_be_bytes()); mp4.extend(b"mdat"); mp4.extend(b"data");
+        let wm = root.join("案例视频/水印版");
+        fs::create_dir_all(wm.join("竖版")).unwrap();
+        fs::create_dir_all(root.join("案例视频/无水印")).unwrap();
+        fs::write(wm.join("case06_pixel-gem_16x9.mp4"), &mp4).unwrap();
+        fs::write(wm.join("case06_pixel-gem_16x9_poster.jpg"), b"j").unwrap();
+        fs::write(wm.join("竖版/case06_pixel-gem_9x16_v2.mp4"), &mp4).unwrap();
+        fs::write(wm.join("case07_other_16x9.mp4"), &mp4).unwrap();
+        fs::write(wm.join("case06_pixel-gem_1x1.mp4"), &mp4).unwrap();
+        fs::write(root.join("案例视频/无水印/case06_pixel-gem_4x3.mp4"), &mp4).unwrap();
+        let e = web_pack(r.clone(), dir.to_string_lossy().to_string()).err().unwrap();
+        assert!(e.contains("9x16_v2.mp4 还没有封面") && !e.contains("16x9.mp4 还没有封面"), "{}", e);
+        fs::write(wm.join("竖版/case06_pixel-gem_9x16_v2_poster.jpg"), b"j").unwrap();
+        let w = web_pack(r.clone(), dir.to_string_lossy().to_string()).unwrap();
+        let mut got: Vec<String> = fs::read_dir(&w.dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        got.sort();
+        assert_eq!(got, vec!["case06-pixel-gem_v1.0.zip", "case06_pixel-gem_16x9.mp4", "case06_pixel-gem_16x9_poster.jpg", "case06_pixel-gem_9x16_v2.mp4", "case06_pixel-gem_9x16_v2_poster.jpg", "project.json"], "{:?}", got);
+        assert!(w.dir.replace('\\', "/").ends_with("_官网上传/case06-pixel-gem"));
+        let n = names(&Path::new(&w.dir).join("case06-pixel-gem_v1.0.zip"));
+        let top = "case06-pixel-gem_v1.0";
+        assert_eq!(n, vec![format!("{top}/PixelGem.toe"), format!("{top}/README.md"), format!("{top}/assets/images/a.png"), format!("{top}/demo/raw.mp4"), format!("{top}/thumb.jpg"), format!("{top}/tox/x.tox")], "{:?}", n);
+        // 官网上传文件夹不会被当成工程扫进来
+        let list = scan_projects(r.clone(), None).unwrap();
+        assert!(list.iter().all(|p| !p.path.contains("_官网上传")));
+        // 文件头检查
+        let bad = root.join("x.mp4");
+        let mut late: Vec<u8> = Vec::new();
+        late.extend(&12u32.to_be_bytes()); late.extend(b"mdat"); late.extend(b"data");
+        late.extend(&20u32.to_be_bytes()); late.extend(b"moov"); late.extend(b"....avc1....");
+        fs::write(&bad, &late).unwrap();
+        assert!(mp4_web_ok(&bad).unwrap_err().contains("faststart"));
+        let mut hevc: Vec<u8> = Vec::new();
+        hevc.extend(&20u32.to_be_bytes()); hevc.extend(b"moov"); hevc.extend(b"....hvc1....");
+        fs::write(&bad, &hevc).unwrap();
+        assert!(mp4_web_ok(&bad).unwrap_err().contains("H.264"));
+        assert!(web_video_name("case06_pixel-gem_16x9", "case06", "pixel-gem") && web_video_name("case06_pixel-gem_3x4_v12", "case06", "pixel-gem"));
+        assert!(!web_video_name("case06_pixel-gem_16x9_final", "case06", "pixel-gem") && !web_video_name("case06_pixel-gem", "case06", "pixel-gem") && !web_video_name("case060_pixel-gem_16x9", "case06", "pixel-gem"));
+        assert_eq!(parse_duration("  Duration: 00:01:02.50, start: 0.000000, bitrate: 4000 kb/s"), Some(62.5));
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 /* ================= 案例工程规范检查 ================= */
@@ -1915,6 +1988,10 @@ struct WmItem {
     src: String,
     out: String,
     done: bool,
+    /// 水印版的体积（字节），没生成是 0
+    size: u64,
+    /// 水印版旁边有没有封面图
+    poster: bool,
 }
 
 #[derive(Serialize)]
@@ -1984,7 +2061,7 @@ fn wm_collect(src_root: &Path, dir: &Path, depth: usize, base: &Path, out: &mut 
             let o = wm_out_path(base, &rel);
             // 水印版存在、而且不比原片旧，才算同步好了
             let done = o.is_file() && mtime(&o) >= mtime(&p);
-            out.push(WmItem { name: p.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), src: p.to_string_lossy().to_string(), out: o.to_string_lossy().to_string(), rel, done });
+            out.push(WmItem { name: p.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), src: p.to_string_lossy().to_string(), size: fs::metadata(&o).map(|m| m.len()).unwrap_or(0), poster: poster_path(&o).is_file(), out: o.to_string_lossy().to_string(), rel, done });
         }
     }
 }
@@ -2092,7 +2169,339 @@ fn wm_render(job: WmJob) -> Result<String, String> {
     }
     let _ = fs::remove_file(&out);
     fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
+    // 顺带出封面；封面没出来不算失败，界面上会提示补
+    let _ = make_poster(&ff, &out, 3.0);
     Ok(out.to_string_lossy().to_string())
+}
+
+/* ---- 官网要的：封面、30 MB 以内 ---- */
+
+const WEB_VIDEO_MAX: u64 = 30 * 1024 * 1024;
+const WEB_POSTER_MAX: u64 = 300 * 1024;
+const WEB_ZIP_MAX: u64 = 500 * 1024 * 1024;
+
+/// 封面和视频同名，加 _poster，JPG
+fn poster_path(video: &Path) -> PathBuf {
+    let stem = video.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    video.with_file_name(format!("{}_poster.jpg", stem))
+}
+
+/// 从视频第 at 秒取一帧当封面，压到 300 KB 以内：先降画质，还不行再缩小
+fn make_poster(ff: &Path, video: &Path, at: f64) -> Result<PathBuf, String> {
+    let out = poster_path(video);
+    let tmp = out.with_extension("part.jpg");
+    let dur = video_duration(ff, video).unwrap_or(0.0);
+    let at = if dur > 0.2 && at >= dur { (dur / 2.0).max(0.0) } else { at.max(0.0) };
+    for (q, scale) in [(3, 1.0), (6, 1.0), (10, 1.0), (10, 0.75), (14, 0.6), (18, 0.5)] {
+        let vf = format!("scale=trunc(iw*{s}/2)*2:trunc(ih*{s}/2)*2", s = scale);
+        let mut cmd = std::process::Command::new(ff);
+        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{:.2}", at), "-i"]).arg(video);
+        cmd.args(["-frames:v", "1", "-vf", &vf, "-q:v", &q.to_string(), "-f", "image2"]).arg(&tmp);
+        let ok = quiet(&mut cmd).output().map(|o| o.status.success()).unwrap_or(false);
+        if ok && tmp.is_file() && fs::metadata(&tmp).map(|m| m.len() > 0 && m.len() <= WEB_POSTER_MAX).unwrap_or(false) {
+            let _ = fs::remove_file(&out);
+            fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
+            return Ok(out);
+        }
+    }
+    let _ = fs::remove_file(&tmp);
+    Err("封面没生成出来".into())
+}
+
+/// 从 ffmpeg -i 的输出里读时长（秒）："Duration: 00:01:02.50"
+fn parse_duration(text: &str) -> Option<f64> {
+    let i = text.find("Duration: ")? + 10;
+    let t = text[i..].split(',').next()?.trim();
+    let mut parts = t.split(':');
+    let (h, m, s) = (parts.next()?.parse::<f64>().ok()?, parts.next()?.parse::<f64>().ok()?, parts.next()?.parse::<f64>().ok()?);
+    Some(h * 3600.0 + m * 60.0 + s)
+}
+
+fn video_duration(ff: &Path, video: &Path) -> Option<f64> {
+    let out = quiet(std::process::Command::new(ff).args(["-hide_banner", "-i"]).arg(video)).output().ok()?;
+    parse_duration(&String::from_utf8_lossy(&out.stderr))
+}
+
+fn wm_out_checked(root: &str, rel: &str) -> Result<(PathBuf, PathBuf), String> {
+    let root = PathBuf::from(root);
+    if rel.split('/').any(|s| s == ".." || s.is_empty()) {
+        return Err("视频路径不对".into());
+    }
+    let out = wm_out_path(&root.join(WM_DIR), rel);
+    if !out.is_file() {
+        return Err("水印版还没生成".into());
+    }
+    let ff = find_ffmpeg(&root).ok_or("没找到 ffmpeg")?;
+    Ok((ff, out))
+}
+
+/// 重新取封面：at 是第几秒
+#[tauri::command(async)]
+fn wm_poster(root: String, rel: String, at: f64) -> Result<String, String> {
+    let (ff, out) = wm_out_checked(&root, &rel)?;
+    make_poster(&ff, &out, at).map(|p| p.to_string_lossy().to_string())
+}
+
+/// 把水印版压到 30 MB 以内：按时长算出码率重新编码，一次不够再降一档
+#[tauri::command(async)]
+fn wm_shrink(root: String, rel: String) -> Result<u64, String> {
+    let (ff, out) = wm_out_checked(&root, &rel)?;
+    let dur = video_duration(&ff, &out).filter(|d| *d > 0.5).ok_or("读不出视频时长")?;
+    let tmp = out.with_extension("small.mp4");
+    for margin in [0.93, 0.85, 0.75] {
+        let total = (WEB_VIDEO_MAX as f64 * 8.0 * margin / dur) as i64;
+        let v = (total - 128_000).max(200_000);
+        let mut cmd = std::process::Command::new(&ff);
+        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&out);
+        cmd.args(["-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-b:v", &v.to_string(), "-maxrate", &((v as f64 * 1.15) as i64).to_string(), "-bufsize", &(v * 2).to_string()]);
+        cmd.args(["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]).arg(&tmp);
+        let res = quiet(&mut cmd).output().map_err(|e| e.to_string())?;
+        if !res.status.success() {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("ffmpeg 没能压缩：{}", String::from_utf8_lossy(&res.stderr).lines().last().unwrap_or("")));
+        }
+        let size = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(u64::MAX);
+        if size <= WEB_VIDEO_MAX {
+            let _ = fs::remove_file(&out);
+            fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
+            return Ok(size);
+        }
+    }
+    let _ = fs::remove_file(&tmp);
+    Err("压了三次还是超过 30 MB，这个视频太长了，建议剪短".into())
+}
+
+/// MP4 能不能边下边播（moov 在 mdat 前面），以及是不是 H.264。只看文件头，不依赖 ffmpeg
+fn mp4_web_ok(path: &Path) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = fs::File::open(path).map_err(|e| e.to_string())?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    let mut pos = 0u64;
+    while pos + 8 <= len {
+        let mut h = [0u8; 8];
+        f.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
+        f.read_exact(&mut h).map_err(|e| e.to_string())?;
+        let mut size = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as u64;
+        let kind = &h[4..8];
+        if size == 1 {
+            let mut ext = [0u8; 8];
+            f.read_exact(&mut ext).map_err(|e| e.to_string())?;
+            size = u64::from_be_bytes(ext);
+        } else if size == 0 {
+            size = len - pos;
+        }
+        if kind == b"mdat" {
+            return Err("没开 faststart（视频信息在画面数据后面），访客要下载完才能播".into());
+        }
+        if kind == b"moov" {
+            let mut buf = vec![0u8; size.min(8 * 1024 * 1024) as usize];
+            f.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
+            f.read_exact(&mut buf).map_err(|e| e.to_string())?;
+            let has = |tag: &[u8]| buf.windows(4).any(|w| w == tag);
+            return if has(b"avc1") || has(b"avc3") { Ok(()) } else { Err("不是 H.264 编码".into()) };
+        }
+        if size < 8 {
+            break;
+        }
+        pos += size;
+    }
+    Err("不是有效的 MP4".into())
+}
+
+/* ================= 打包 ================= */
+
+fn zip_add(zip: &mut zip::ZipWriter<fs::File>, src: &Path, name: &str) -> Result<(), String> {
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).large_file(true);
+    if src.is_dir() {
+        let mut entries: Vec<_> = fs::read_dir(src).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            let n = p.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+            let l = n.to_lowercase();
+            // 交付物里不带：内部标注、备份、崩溃存档、系统杂项
+            if l == "project.json" || l == "backup" || l.starts_with("crashautosave") || l == "desktop.ini" || l == ICON_FILE || system_junk(&n).is_some() {
+                continue;
+            }
+            zip_add(zip, &p, &format!("{}/{}", name, n))?;
+        }
+        Ok(())
+    } else {
+        zip.start_file(name, opts).map_err(|e| e.to_string())?;
+        let mut f = fs::File::open(src).map_err(|e| e.to_string())?;
+        std::io::copy(&mut f, zip).map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+/// 把工程打成交付用的压缩包，写到 out。只带：主 .toe、README、assets、tox、scripts；
+/// 案例工程另带 demo 和 thumb.jpg。project.json、docs、deliver、Backup、export、多余的 .toe 都不带。
+fn pack_to(dir: &Path, out: &Path, case: bool) -> Result<u64, String> {
+    let meta = read_meta(dir);
+    let prefer = meta.as_ref().and_then(|m| m.get("mainToe")).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let toe = main_toe(&toes_in(dir), prefer.as_deref()).ok_or("工程文件夹第一层没有 .toe，没法打包")?;
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = out.with_extension("part");
+    let res = (|| -> Result<(), String> {
+        let mut zip = zip::ZipWriter::new(fs::File::create(&tmp).map_err(|e| e.to_string())?);
+        let top = out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        zip_add(&mut zip, &toe, &format!("{}/{}", top, toe.file_name().unwrap().to_string_lossy()))?;
+        let mut keep: Vec<&str> = vec!["assets", "tox", "scripts"];
+        if case {
+            keep.push("demo");
+        }
+        for e in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            let l = n.to_lowercase();
+            let take = if e.path().is_dir() { keep.contains(&l.as_str()) } else { l == "readme.md" || l == "readme.txt" || l.starts_with("使用说明.") || (case && l == "thumb.jpg") };
+            if take {
+                zip_add(&mut zip, &e.path(), &format!("{}/{}", top, n))?;
+            }
+        }
+        zip.finish().map(|_| ()).map_err(|e| e.to_string())
+    })();
+    if let Err(e) = res {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    let _ = fs::remove_file(out);
+    fs::rename(&tmp, out).map_err(|e| e.to_string())?;
+    Ok(fs::metadata(out).map(|m| m.len()).unwrap_or(0))
+}
+
+fn meta_str(meta: &Value, key: &str) -> String {
+    meta.get(key).and_then(|v| v.as_str()).unwrap_or("").trim().to_string()
+}
+
+#[derive(Serialize)]
+struct Packed {
+    path: String,
+    size: u64,
+}
+
+/// 定制工程打包：存到工程的 deliver 文件夹，名字是 英文项目名_v版本_日期.zip
+#[tauri::command(async)]
+fn pack_order(path: String, date: String) -> Result<Packed, String> {
+    let dir = PathBuf::from(&path);
+    let meta = read_meta(&dir).ok_or("这个工程还没有标注")?;
+    let (slug, ver) = (meta_str(&meta, "slug"), meta_str(&meta, "version"));
+    if slug.is_empty() || ver.is_empty() {
+        return Err("先在详情里填好英文短名和工程版本".into());
+    }
+    let out = dir.join("deliver").join(format!("{}_v{}_{}.zip", slug, ver, date.replace('-', "")));
+    let size = pack_to(&dir, &out, false)?;
+    Ok(Packed { path: out.to_string_lossy().to_string(), size })
+}
+
+const WEB_DIR: &str = "_官网上传";
+
+#[derive(Serialize)]
+struct WebPack {
+    dir: String,
+    files: Vec<String>,
+    notes: Vec<String>,
+}
+
+fn collect_mp4(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if depth < 3 {
+                collect_mp4(&p, depth + 1, out);
+            }
+        } else if p.extension().map(|x| x.to_string_lossy().to_lowercase() == "mp4").unwrap_or(false) {
+            out.push(p);
+        }
+    }
+}
+
+/// 视频文件名是不是「编号_短名_比例[_v版本]」
+fn web_video_name(stem: &str, case_id: &str, slug: &str) -> bool {
+    let Some(rest) = stem.strip_prefix(&format!("{}_{}_", case_id, slug)) else { return false };
+    let mut parts = rest.split('_');
+    let ratio_ok = matches!(parts.next(), Some("16x9" | "9x16" | "3x4" | "4x3"));
+    let ver_ok = match parts.next() {
+        None => true,
+        Some(v) => v.len() > 1 && v.starts_with('v') && v[1..].chars().all(|c| c.is_ascii_digit()),
+    };
+    ratio_ok && ver_ok && parts.next().is_none()
+}
+
+/// 准备官网上传包：根目录/_官网上传/案例标识/ 里正好放官网要的东西。
+/// 视频只从 案例视频/水印版 里取，绝不碰无水印原片。有不合格的就列出来，什么都不生成。
+#[tauri::command(async)]
+fn web_pack(root: String, path: String) -> Result<WebPack, String> {
+    let root = PathBuf::from(root);
+    let dir = PathBuf::from(&path);
+    let meta = read_meta(&dir).ok_or("这个工程还没有标注")?;
+    let (case_id, slug, ver) = (meta_str(&meta, "caseId"), meta_str(&meta, "slug"), meta_str(&meta, "version"));
+    if case_id.is_empty() || slug.is_empty() || ver.is_empty() {
+        return Err("编号、英文短名、工程版本要先填好".into());
+    }
+    let mut vids = Vec::new();
+    collect_mp4(&root.join(WM_DIR).join(WM_OUT), 1, &mut vids);
+    vids.retain(|p| p.file_stem().map(|s| web_video_name(&s.to_string_lossy(), &case_id, &slug)).unwrap_or(false));
+    vids.sort();
+    let mut bad = Vec::new();
+    if vids.is_empty() {
+        bad.push(format!("「案例视频/水印版」里没有这个案例的视频（文件名要是 {}_{}_16x9.mp4 这样）", case_id, slug));
+    }
+    for v in &vids {
+        let name = v.file_name().unwrap().to_string_lossy().to_string();
+        let size = fs::metadata(v).map(|m| m.len()).unwrap_or(0);
+        if size > WEB_VIDEO_MAX {
+            bad.push(format!("{} 有 {:.1} MB，超过 30 MB", name, size as f64 / 1048576.0));
+        }
+        if let Err(e) = mp4_web_ok(v) {
+            bad.push(format!("{}：{}", name, e));
+        }
+        let poster = poster_path(v);
+        match fs::metadata(&poster) {
+            Ok(m) if m.len() <= WEB_POSTER_MAX => {}
+            Ok(_) => bad.push(format!("{} 的封面超过 300 KB", name)),
+            Err(_) => bad.push(format!("{} 还没有封面", name)),
+        }
+    }
+    if toes_in(&dir).is_empty() {
+        bad.push("工程文件夹第一层没有 .toe".into());
+    }
+    if !bad.is_empty() {
+        return Err(bad.join("\n"));
+    }
+    let dest = root.join(WEB_DIR).join(format!("{}-{}", case_id, slug));
+    // 重新生成：先清掉上次放进去的文件（只清这一层的文件，不动别的）
+    if let Ok(rd) = fs::read_dir(&dest) {
+        for e in rd.flatten().filter(|e| e.path().is_file()) {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    let mut files = Vec::new();
+    let mut notes = Vec::new();
+    fs::copy(dir.join("project.json"), dest.join("project.json")).map_err(|e| e.to_string())?;
+    files.push("project.json".to_string());
+    for v in &vids {
+        for f in [v.clone(), poster_path(v)] {
+            let n = f.file_name().unwrap().to_string_lossy().to_string();
+            fs::copy(&f, dest.join(&n)).map_err(|e| e.to_string())?;
+            files.push(n);
+        }
+    }
+    let zip_name = format!("{}-{}_v{}.zip", case_id, slug, ver);
+    let zip_path = dest.join(&zip_name);
+    let size = pack_to(&dir, &zip_path, true)?;
+    if size > WEB_ZIP_MAX {
+        // 太大的不放进上传包，挪到旁边，留给网盘
+        let aside = root.join(WEB_DIR).join(&zip_name);
+        let _ = fs::remove_file(&aside);
+        fs::rename(&zip_path, &aside).map_err(|e| e.to_string())?;
+        notes.push(format!("压缩包有 {:.0} MB，超过 500 MB，官网收不了。已放在 {} 旁边，请传网盘，把链接和提取码填进官网后台", size as f64 / 1048576.0, WEB_DIR));
+    } else {
+        notes.push(format!("压缩包 {:.1} MB", size as f64 / 1048576.0));
+        files.push(zip_name);
+    }
+    Ok(WebPack { dir: dest.to_string_lossy().to_string(), files, notes })
 }
 
 /// 界面用来判断组件库里的路径还在不在："file" / "dir" / ""
@@ -2116,7 +2525,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![scan_projects, inspect_import, set_thumb, list_templates, open_templates_dir, save_as_template, create_project, save_meta, open_project, reveal, delete_project, move_project, set_folder_icon, read_image, save_custom_logo, clear_custom_logo, custom_logo, list_user_themes, open_themes_dir, check_case, wm_scan, wm_probe, wm_render, path_kind])
+        .invoke_handler(tauri::generate_handler![scan_projects, inspect_import, set_thumb, list_templates, open_templates_dir, save_as_template, create_project, save_meta, open_project, reveal, delete_project, move_project, set_folder_icon, read_image, save_custom_logo, clear_custom_logo, custom_logo, list_user_themes, open_themes_dir, check_case, wm_scan, wm_probe, wm_render, wm_poster, wm_shrink, pack_order, web_pack, path_kind])
         .run(tauri::generate_context!())
         .expect("启动失败");
 }

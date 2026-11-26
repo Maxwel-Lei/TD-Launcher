@@ -40,9 +40,13 @@
         if (cmd === 'list_templates') return tpls;
         if (cmd === 'path_kind') return /nope/.test(args.path) ? '' : /\.tox$/.test(args.path) ? 'file' : 'dir';
         if (cmd === 'check_case') return [{ label: '工程文件在第一层', ok: true, hint: '' }, { label: '有演示视频', ok: false, hint: '把成片放进 demo 文件夹' }];
-        if (cmd === 'wm_scan') { window.__wm = window.__wm || [{ rel: 'CASE01_手势寻宝_握拳收集.mov', name: 'CASE01_手势寻宝_握拳收集', src: 'x', out: 'y', done: false }, { rel: '竖版/CASE02_晕染.mp4', name: 'CASE02_晕染', src: 'x2', out: 'y2', done: true }]; return { dir: args.root + '/案例视频', exists: true, ffmpeg: 'ffmpeg', items: window.__wm.map(x => ({ ...x })) }; }
+        if (cmd === 'wm_scan') { window.__wm = window.__wm || [{ rel: 'CASE01_手势寻宝_握拳收集.mov', name: 'CASE01_手势寻宝_握拳收集', src: 'x', out: 'y', done: false, size: 0, poster: false }, { rel: '竖版/case02_ink-wash_9x16.mp4', name: 'case02_ink-wash_9x16', src: 'x2', out: 'y2', done: true, size: 45 * 1048576, poster: false }]; return { dir: args.root + '/案例视频', exists: true, ffmpeg: 'ffmpeg', items: window.__wm.map(x => ({ ...x })) }; }
+        if (cmd === 'wm_poster') { window.__wm.find(x => x.rel === args.rel).poster = true; return 'p'; }
+        if (cmd === 'wm_shrink') { window.__wm.find(x => x.rel === args.rel).size = 20 * 1048576; return 20 * 1048576; }
+        if (cmd === 'pack_order') return { path: args.path + '/deliver/x.zip', size: 5 * 1048576 };
+        if (cmd === 'web_pack') { if (window.__webFail) throw '视频 A 超过 30 MB\n视频 B 还没有封面'; return { dir: args.root + '/_官网上传/case06-pixel-gem', files: ['project.json', 'case06_pixel-gem_16x9.mp4', 'case06_pixel-gem_16x9_poster.jpg', 'case06-pixel-gem_v1.0.zip'], notes: ['压缩包 12.0 MB'] }; }
         if (cmd === 'wm_probe') return args.src === 'x' ? [1920, 1080] : [1080, 1920];
-        if (cmd === 'wm_render') { window.__wmJobs = (window.__wmJobs || []).concat([args.job]); window.__wm.find(x => x.rel === args.job.rel).done = true; return 'ok'; }
+        if (cmd === 'wm_render') { window.__wmJobs = (window.__wmJobs || []).concat([args.job]); const it = window.__wm.find(x => x.rel === args.job.rel); it.done = true; it.size = 8 * 1048576; it.poster = true; return 'ok'; }
         if (cmd === 'open_templates_dir') return 'C:/Users/me/AppData/Roaming/com.tdxuezhang.launcher/templates';
         if (cmd === 'save_as_template') { if (tpls.some(t => t.name === args.name)) throw `已经有叫「${args.name}」的模板了`; tpls.push({ name: args.name, hasToe: true, entries: ['assets/', 'export/'] }); return null; }
         if (cmd === 'list_user_themes') return window.__userThemes || [];

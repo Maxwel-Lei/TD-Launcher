@@ -228,6 +228,10 @@ textarea.inp{height:auto;padding:12px 14px;line-height:1.7;resize:vertical}
 .case-checks{display:flex;flex-wrap:wrap;gap:2px 16px}
 .case-checks .chk{min-height:28px;font-size:13px}
 .case-checks .chk input{width:16px;height:16px}
+.linkish{border:0;background:none;padding:0;margin-right:12px;color:var(--ink);font-size:12px;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.wm-row .acts{overflow:visible}
+.wm-at{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;color:var(--ink2)}
+.wm-at .inp{width:72px;height:32px;padding:0 8px;font-size:13px}
 pre.tree{margin:0;padding:16px 18px;background:var(--bg2);box-shadow:inset 0 0 0 1px var(--line);font:400 12.5px/1.7 var(--f-mono);color:var(--ink2);overflow-x:auto}
 pre.tree b{color:var(--ink);font-weight:500}
 
@@ -550,7 +554,7 @@ body.dropping #main::after{content:"松开鼠标，导入这个文件夹";positi
     <button class="x" type="button" data-close aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square"><path d="M5 5l14 14M19 5L5 19"/></svg></button>
   </div>
   <div class="pane-b">
-    <p class="ann-intro">把成片放进根目录的「案例视频/无水印」，这里会在「案例视频/水印版」生成带 TD学长 边框和水印的版本。按画面比例自动选模板（16:9、9:16、3:4、4:3），原片不动。文件名按规范写成「case06_pixel-gem_16x9」，水印上的编号取自文件名，标题和技术标签取自同编号的案例工程；也可以直接写「CASE01_标题_副标题」。</p>
+    <p class="ann-intro">把成片放进根目录的「案例视频/无水印」，这里会在「案例视频/水印版」生成带 TD学长 边框和水印的版本。按画面比例自动选模板（16:9、9:16、3:4、4:3），原片不动。每个水印版旁边会自动出一张封面图（同名加 _poster）。文件名按规范写成「case06_pixel-gem_16x9」，水印上的编号取自文件名，标题和技术标签取自同编号的案例工程；也可以直接写「CASE01_标题_副标题」。</p>
     <p class="ann-intro" id="wNote" hidden></p>
     <div id="wList"></div>
   </div>
