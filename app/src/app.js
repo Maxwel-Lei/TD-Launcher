@@ -167,6 +167,7 @@ function normalize(raw) {
   return {
     id: raw.path,
     path: raw.path,
+    meta: m,
     folder: raw.folder,
     group: raw.group || '',
     toe: raw.toe,
@@ -1068,16 +1069,81 @@ function renderCats() {
 $('#npCat').addEventListener('change', e => { try { localStorage.setItem('newCat', e.target.value); } catch (er) {} $('#npCase').checked = /案例/.test(e.target.value); });
 
 /* ================= 案例工程规范检查（详情里，只对「案例」分类下的工程显示） ================= */
+// 官网用的分类：取值固定，和官网报价的档位一致（见《案例工程规范》8.3）
+const CASE_OPTS = {
+  interact: [['none', '无交互'], ['simple', '声音 / 麦克风 / 鼠标键盘 / MIDI'], ['camera', '摄像头（动作、轮廓、颜色）'], ['tracking', '人体 / 手势识别'], ['sensor', '硬件传感器（Arduino 等）'], ['depth', '深度相机（Kinect、RealSense）'], ['external', '外部联动（手机、网站、别的软件）']],
+  visual: [['basic', '2D 图形、滤镜、文字'], ['particle', '粒子、噪声、音频可视化'], ['advanced', '流体、复杂粒子、多层叠加'], ['scene3d', '三维模型、灯光、镜头'], ['shader', '自写 GLSL'], ['photoreal', '写实']],
+  output: [['screen', '一块屏幕'], ['projector', '一台投影'], ['led', 'LED 大屏'], ['multi', '多屏 / 多投影拼接'], ['mapping', '投影映射']],
+  platform: [['td', 'TouchDesigner'], ['unity', 'Unity'], ['ue', 'Unreal'], ['xr', 'XR']],
+};
+const CASE_BAN = ['毕设', '课设', '代做', '代写'];
+const listOf = v => String(v || '').split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean);
+const isCase = p => /案例/.test(topGroup(p)) || /^CASE\d/i.test(p.folder || '');
+// 官网后台会拒收的问题，先在这里查一遍
+function caseWebIssues(p) {
+  const m = p.meta || {}, out = [];
+  if (!/^case\d{2,}$/.test(m.caseId || '')) out.push('编号要写成 case06 这样');
+  if (!/^[a-z0-9]+(-[a-z0-9]+){0,3}$/.test(m.slug || '')) out.push('英文短名只用小写英文和数字，词之间用连字符，最多 4 个词');
+  if (!p.name || [...p.name].length > 12) out.push('标题要在 12 个字以内');
+  if (!m.subtitle) out.push('还没有副标题');
+  if (!p.note || [...p.note].length > 60) out.push('备注（简介）要填，60 个字以内');
+  if (!p.tags.length) out.push('还没有技术标签');
+  if (!m.tdVersion) out.push('还没填 TD 版本号');
+  if (!(Array.isArray(m.interact) && m.interact.length) || !m.visual) out.push('交互方式和视觉类型没选，官网没法判断它和客户的需求像不像');
+  const text = [p.name, m.subtitle, p.note, ...(m.keywords || [])].join(' '), hit = CASE_BAN.filter(w => text.includes(w));
+  if (hit.length) out.push(`文案里有不能出现的词：${hit.join('、')}`);
+  if (m.fromOrder && !m.clientConsent) out.push('来自定制单，还没确认客户同意，官网不会公开');
+  return out;
+}
 async function renderCase(p) {
   const box = $('#dCase');
-  if (!/案例/.test(topGroup(p)) && !/^CASE\d/i.test(p.folder || '')) { box.hidden = true; return; }
+  if (!isCase(p)) { box.hidden = true; return; }
   let list = [];
   try { list = await invoke('check_case', { path: p.path }); } catch (e) { box.hidden = true; return; }
   if (ui.openId !== p.id) return;
-  const n = list.filter(x => x.ok).length;
+  const n = list.filter(x => x.ok).length, m = p.meta || {};
+  const guess = ((p.folder || '').match(/^CASE[\s_-]*(\d+)/i) || [])[1];
+  const sel = (key, cur) => `<select class="inp" data-case="${key}"><option value="">（没选）</option>${CASE_OPTS[key].map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  const txt = (key, label, ph, val) => `<div class="field"><label>${label}</label><input class="inp${/Id|slug|Version|version/.test(key) ? ' mono' : ''}" type="text" data-case="${key}" placeholder="${esc(ph)}" value="${esc(val == null ? '' : val)}"></div>`;
+  const issues = caseWebIssues(p);
   box.hidden = false;
-  box.innerHTML = `<div class="fl"><span>案例工程规范</span><span class="label">${n} / ${list.length}${n === list.length ? ' · 可以交付' : ''}</span></div><ul class="case-list">${list.map(x => `<li class="${x.ok ? 'yes' : 'no'}"><span>${x.ok ? '✓' : '○'}</span><span>${esc(x.label)}</span>${x.ok ? '' : `<small>${esc(x.hint)}</small>`}</li>`).join('')}</ul>`;
+  box.innerHTML = `<div class="fl"><span>案例工程规范</span><span class="label">${n} / ${list.length}${n === list.length ? ' · 可以交付' : ''}</span></div>
+    <ul class="case-list">${list.map(x => `<li class="${x.ok ? 'yes' : 'no'}"><span>${x.ok ? '✓' : '○'}</span><span>${esc(x.label)}</span>${x.ok ? '' : `<small>${esc(x.hint)}</small>`}</li>`).join('')}</ul>
+    <div class="fl" style="margin-top:14px"><span>官网信息</span><span class="label" id="dCaseWeb">${issues.length ? `还差 ${issues.length} 项` : '可以上传官网'}</span></div>
+    <div class="case-form">
+      ${txt('caseId', '编号', guess ? 'case' + guess.padStart(2, '0') : 'case06', m.caseId)}${txt('slug', '英文短名', 'pixel-gem', m.slug)}
+      ${txt('subtitle', '副标题', '一句话说清交互方式', m.subtitle)}
+      ${txt('tdVersion', 'TD 版本', '2025.33230', m.tdVersion)}${txt('version', '工程版本', '1.0', m.version)}
+      <div class="field wide"><label>交互方式（可多选）</label><div class="case-checks">${CASE_OPTS.interact.map(([v, l]) => `<label class="chk"><input type="checkbox" data-case-int="${v}"${(m.interact || []).includes(v) ? ' checked' : ''}><span>${esc(l)}</span></label>`).join('')}</div></div>
+      <div class="field"><label>视觉类型</label>${sel('visual', m.visual)}</div><div class="field"><label>输出</label>${sel('output', m.output)}</div>
+      <div class="field"><label>平台</label>${sel('platform', m.platform || 'td')}</div>${txt('minGpu', '最低显卡', 'GTX 1660 或同级', m.minGpu)}
+      ${txt('keywords', '客户会说的词（最多 8 个）', '文物、水墨、手势', (m.keywords || []).join('、'))}${txt('devices', '需要的外设', '摄像头；不需要就留空', (m.devices || []).join('、'))}
+      <div class="field wide"><div class="case-checks">
+        <label class="chk"><input type="checkbox" data-case="nonCommercial"${m.nonCommercial ? ' checked' : ''}><span>能在 TD 免费版上运行</span></label>
+        <label class="chk"><input type="checkbox" data-case="fromOrder"${m.fromOrder ? ' checked' : ''}><span>来自定制单</span></label>
+        <label class="chk"${m.fromOrder ? '' : ' hidden'} id="dCaseConsent"><input type="checkbox" data-case="clientConsent"${m.clientConsent ? ' checked' : ''}><span>客户已同意，且已换掉客户素材</span></label>
+      </div></div>
+    </div>
+    <ul class="case-list" id="dCaseIssues">${issues.map(x => `<li class="no"><span>○</span><span>${esc(x)}</span></li>`).join('')}</ul>`;
 }
+$('#dCase').addEventListener('change', async e => {
+  const p = cur(), t = e.target; if (!p) return;
+  const m = p.meta = { ...(p.meta || {}) }, patch = {};
+  if (t.dataset.caseInt) { patch.interact = [...$('#dCase').querySelectorAll('[data-case-int]')].filter(x => x.checked).map(x => x.dataset.caseInt); }
+  else if (t.dataset.case) {
+    const k = t.dataset.case;
+    patch[k] = t.type === 'checkbox' ? t.checked : k === 'keywords' ? listOf(t.value).slice(0, 8) : k === 'devices' ? listOf(t.value) : k === 'caseId' || k === 'slug' ? t.value.trim().toLowerCase() : t.value.trim();
+    if (k === 'caseId' || k === 'slug') t.value = patch[k];
+    if (k === 'fromOrder') { $('#dCaseConsent').hidden = !t.checked; if (!t.checked) patch.clientConsent = false; }
+  } else return;
+  // 平台没动过也一起记下默认值，官网读的时候就不用猜
+  if (!m.platform && !patch.platform) patch.platform = 'td';
+  Object.assign(m, patch);
+  try { await invoke('save_meta', { path: p.path, meta: patch }); saved(); } catch (er) { toast('没保存上：' + er); }
+  const issues = caseWebIssues(p);
+  $('#dCaseWeb').textContent = issues.length ? `还差 ${issues.length} 项` : '可以上传官网';
+  $('#dCaseIssues').innerHTML = issues.map(x => `<li class="no"><span>○</span><span>${esc(x)}</span></li>`).join('');
+});
 
 /* ================= 案例视频水印 ================= */
 // 四套标准模板：画布尺寸 + 画面内框。画面等比缩放放进内框，四周是 TD学长 的深色边框和标识。
@@ -1098,11 +1164,11 @@ function wmInfo(it) {
   const m = stem.match(/^CASE[\s_-]*(\d+)[\s_-]*(.*)$/i);
   if (m) { no = m[1].padStart(2, '0'); stem = m[2]; }
   const parts = stem.split('_').map(x => x.trim()).filter(x => x && !/^(16x9|9x16|3x4|4x3|v\d+)$/i.test(x));
-  const proj = no && projects.find(p => new RegExp('^CASE[\\s_-]*0*' + Number(no) + '(\\D|$)', 'i').test(p.folder || ''));
+  const proj = no && (projects.find(p => p.meta && /^case\d+$/.test(p.meta.caseId || '') && Number(p.meta.caseId.slice(4)) === Number(no)) || projects.find(p => new RegExp('^CASE[\\s_-]*0*' + Number(no) + '(\\D|$)', 'i').test(p.folder || '')));
   // 同编号的案例工程有标签的话，拿来当右下角的技术标签
   const tags = (proj && proj.tags.length ? proj.tags.slice(0, 3) : ['TouchDesigner']).map(t => t.toUpperCase());
   const ascii = !/[^\x00-\x7f]/.test(parts.join(''));
-  if (proj && ascii) return { no, title: proj.name || parts[0] || it.name, sub: '', tags };
+  if (proj && ascii) return { no, title: proj.name || parts[0] || it.name, sub: (proj.meta && proj.meta.subtitle) || '', tags };
   return { no, title: (parts[0] || it.name).replace(/-/g, ascii ? ' ' : '-'), sub: parts.slice(1).join(' '), tags };
 }
 function wmDraw(t, info) {
